@@ -39,8 +39,8 @@
     },
     {
       "name": "release",
-      "provider": "claude",
-      "model": "claude-haiku-5-5",
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
       "folders": [
         "README.md",
         "OVERVIEW.md",
