@@ -358,7 +358,7 @@ async function orchestratorSetup(paseo: PaseoApi, providers: readonly ProviderEn
 /** Starts an orchestrator with the same configuration for apply, share and restart; `workspace` is the title of the workspace it runs in. */
 async function startOrchestrator(paseo: PaseoApi, workspaceId: string, workspace: string, team: Team, modes: ReturnType<typeof roleModes>, orchestratorMode: ReturnType<typeof agentModeOf>, relative: string, features: Record<string, AgentFeatures>, featureValues: AgentFeatures) {
   return paseo.workspaces.ref(workspaceId).agents.create({
-    config: { provider: `${team.orchestrator.provider}/${team.orchestrator.model}`, modeId: orchestratorMode, ...(featureValues ? { featureValues } : {}), systemPrompt: orchestratorPrompt(team, modes, relative, features, workspace) },
+    config: { provider: `${team.orchestrator.provider}/${team.orchestrator.model}`, modeId: orchestratorMode, ...(team.orchestrator.effort ? { thinkingOptionId: team.orchestrator.effort } : {}), ...(featureValues ? { featureValues } : {}), systemPrompt: orchestratorPrompt(team, modes, relative, features, workspace) },
     title: "Orchestrator",
     prompt: `Read ${relative}, then reply with a short summary of the team (role, workspace, provider/model) and say you are ready for a request. Do not start any agents yet. In your ready reply, tell the user that /clear makes you lose your orchestrator role and that the team panel's "Reset session" button gives a fresh conversation that keeps the role.`,
     labels: { [LABEL]: "orchestrator" },
@@ -369,7 +369,8 @@ async function startOrchestrator(paseo: PaseoApi, workspaceId: string, workspace
 async function runOrchestrator(paseo: PaseoApi, agents: Parameters<typeof findOrchestrator>[0], workspaceId: string, workspace: string, team: Team, relative: string, providers: readonly ProviderEntry[], features: Record<string, AgentFeatures>, featureValues: AgentFeatures): Promise<string> {
   const modes = roleModes(team, providers);
   const orchestratorMode = agentModeOf(providers, team.orchestrator.provider);
-  const running = findOrchestrator(agents, workspaceId, team, orchestratorMode);
+  const defaultEffort = providers.find((entry) => entry.provider === team.orchestrator.provider)?.models?.find((model) => model.id === team.orchestrator.model)?.defaultThinkingOptionId;
+  const running = findOrchestrator(agents, workspaceId, team, orchestratorMode, defaultEffort);
   if (running) {
     await paseo.agents.ref(running.id).send(teamChangedMessage(team, modes, relative, features, workspace));
     return running.id;

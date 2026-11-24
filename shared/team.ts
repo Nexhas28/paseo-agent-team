@@ -6,11 +6,15 @@ export const TEAM_FILE = ".agents/team.json";
 
 const name = z.string().trim().min(1);
 
+/** A Paseo thinking option id of the agent's model; empty or missing means the model's default. */
+const effort = z.string().trim().transform((value) => value || undefined).optional();
+
 export const OrchestratorSchema = z.object({
   /** Workspace title, matched by name so the file works on any machine. */
   workspace: name,
   provider: name,
   model: name,
+  effort,
   /** Shared workspaces: other workspace titles that run this same team definition with their own orchestrator (ADR 261112-222439). */
   sharedWorkspaces: z.array(name).optional(),
 });
@@ -19,6 +23,7 @@ export const RoleSchema = z.object({
   name,
   provider: name,
   model: name,
+  effort,
   folders: z.array(z.string().trim().min(1)).default([]),
   instructions: z.string().default(""),
 });

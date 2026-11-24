@@ -5,7 +5,7 @@ export interface ProviderEntry {
   provider: string;
   enabled: boolean;
   status: string;
-  models?: readonly { id: string; label: string; isSelectable?: boolean }[];
+  models?: readonly { id: string; label: string; isSelectable?: boolean; thinkingOptions?: readonly { id: string; label: string }[]; defaultThinkingOptionId?: string }[];
   modes?: readonly { id: string; label?: string; isUnattended?: boolean; colorTier?: string }[];
   defaultModeId?: string | null;
 }
@@ -14,7 +14,8 @@ export interface ProviderInfo {
   id: string;
   ready: boolean;
   status: string;
-  models: { id: string; label: string }[];
+  /** `efforts` are the model's thinking options (catalogFrom always sets them; empty when it has none). */
+  models: { id: string; label: string; efforts?: { id: string; label: string }[]; defaultEffort?: string }[];
 }
 
 export interface TeamError {
@@ -65,7 +66,7 @@ export function agentFeaturesOf(entries: readonly ProviderEntry[], provider: str
     : undefined;
 }
 
-/** The enabled providers and their selectable models. */
+/** The enabled providers and their selectable models with their efforts (thinking options). */
 export function catalogFrom(entries: readonly ProviderEntry[]): ProviderInfo[] {
   return entries
     .filter((entry) => entry.enabled)
@@ -73,21 +74,31 @@ export function catalogFrom(entries: readonly ProviderEntry[]): ProviderInfo[] {
       id: entry.provider,
       ready: entry.status === "ready",
       status: entry.status,
-      models: (entry.models ?? []).filter((model) => model.isSelectable !== false).map(({ id, label }) => ({ id, label })),
+      models: (entry.models ?? []).filter((model) => model.isSelectable !== false).map(({ id, label, thinkingOptions, defaultThinkingOptionId }) => ({
+        id,
+        label,
+        efforts: (thinkingOptions ?? []).map((option) => ({ id: option.id, label: option.label })),
+        ...(defaultThinkingOptionId ? { defaultEffort: defaultThinkingOptionId } : {}),
+      })),
     }));
 }
 
-function check(target: string, provider: string, model: string, catalog: readonly ProviderInfo[]): TeamError | null {
+function check(target: string, provider: string, model: string, effort: string | undefined, catalog: readonly ProviderInfo[]): TeamError | null {
   const info = catalog.find((entry) => entry.id === provider);
   if (!info) return { target, message: `provider "${provider}" is not enabled on this host` };
   if (!info.ready) return { target, message: `provider "${provider}" is not ready (${info.status})` };
-  if (!info.models.some((entry) => entry.id === model)) return { target, message: `model "${model}" is not available for ${provider}` };
+  const found = info.models.find((entry) => entry.id === model);
+  if (!found) return { target, message: `model "${model}" is not available for ${provider}` };
+  const efforts = (found.efforts ?? []).map((option) => option.id);
+  if (effort !== undefined && !efforts.includes(effort)) {
+    return { target, message: `effort "${effort}" is not available for ${provider}/${model} (${efforts.length ? `allowed: ${efforts.join(", ")}` : "it has no effort options; leave it empty"})` };
+  }
   return null;
 }
 
-/** Checks every provider/model in the team against what this host can run. */
+/** Checks every provider/model, and effort when set, in the team against what this host can run. */
 export function validateTeam(team: Team, catalog: readonly ProviderInfo[]): TeamError[] {
-  const errors = [check("orchestrator", team.orchestrator.provider, team.orchestrator.model, catalog)];
-  for (const role of team.roles) errors.push(check(role.name, role.provider, role.model, catalog));
+  const errors = [check("orchestrator", team.orchestrator.provider, team.orchestrator.model, team.orchestrator.effort, catalog)];
+  for (const role of team.roles) errors.push(check(role.name, role.provider, role.model, role.effort, catalog));
   return errors.filter((error): error is TeamError => error !== null);
 }

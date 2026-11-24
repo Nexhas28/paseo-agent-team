@@ -53,10 +53,16 @@ export interface OrchestratorCandidate extends AgentRef {
   provider: string;
   model: string | null;
   currentModeId?: string | null;
+  thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
 }
 
-/** The running orchestrator in the lead workspace on the team's provider/model and, when given, mode. */
-export function findOrchestrator(agents: readonly OrchestratorCandidate[], workspaceId: string, team: Team, modeId: string | undefined): OrchestratorCandidate | undefined {
+/**
+ * The running orchestrator in the lead workspace on the team's provider/model, effort and, when given, mode.
+ * `defaultEffort` is the model's default thinking option, so an unset team effort matches an agent on the model default.
+ */
+export function findOrchestrator(agents: readonly OrchestratorCandidate[], workspaceId: string, team: Team, modeId: string | undefined, defaultEffort?: string): OrchestratorCandidate | undefined {
+  const effort = team.orchestrator.effort ?? defaultEffort;
   return agents.find(
     (agent) =>
       agent.workspaceId === workspaceId &&
@@ -64,6 +70,7 @@ export function findOrchestrator(agents: readonly OrchestratorCandidate[], works
       !agent.archivedAt &&
       agent.provider === team.orchestrator.provider &&
       agent.model === team.orchestrator.model &&
+      (agent.effectiveThinkingOptionId ?? agent.thinkingOptionId ?? defaultEffort) === effort &&
       (modeId === undefined || agent.currentModeId === modeId),
   );
 }

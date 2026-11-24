@@ -11,7 +11,7 @@ export const INSTRUCTIONS_JSON_SCHEMA = {
   properties: { instructions: text },
 };
 
-/** The planner agent's `outputSchema`: a complete team file, every field present. */
+/** The planner agent's `outputSchema`: a complete team file, every field present (an empty effort means the model's default). */
 export const TEAM_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -22,14 +22,14 @@ export const TEAM_JSON_SCHEMA = {
     orchestrator: {
       type: "object",
       additionalProperties: false,
-      required: ["workspace", "provider", "model"],
-      properties: { workspace: text, provider: text, model: text },
+      required: ["workspace", "provider", "model", "effort"],
+      properties: { workspace: text, provider: text, model: text, effort: { type: "string" } },
     },
     roles: { type: "array", minItems: 1, items: {
       type: "object",
       additionalProperties: false,
-      required: ["name", "provider", "model", "folders", "instructions"],
-      properties: { name: text, provider: text, model: text, folders: { type: "array", items: text }, instructions: { type: "string" } },
+      required: ["name", "provider", "model", "effort", "folders", "instructions"],
+      properties: { name: text, provider: text, model: text, effort: { type: "string" }, folders: { type: "array", items: text }, instructions: { type: "string" } },
     } },
   },
 };
@@ -40,13 +40,19 @@ const INSTRUCTIONS_EXAMPLE = { instructions: "<improved instructions>" };
 const EXAMPLE = {
   version: 1,
   goal: "<the goal>",
-  orchestrator: { workspace: "orchestrator", provider: "<provider id>", model: "<model id>" },
-  roles: [{ name: "<role>", provider: "<provider id>", model: "<model id>", folders: ["<relative/path>"], instructions: "<what this role does>" }],
+  orchestrator: { workspace: "orchestrator", provider: "<provider id>", model: "<model id>", effort: "<effort id, or empty for the model default>" },
+  roles: [{ name: "<role>", provider: "<provider id>", model: "<model id>", effort: "<effort id, or empty for the model default>", folders: ["<relative/path>"], instructions: "<what this role does>" }],
 };
 
+/** Each ready provider's model ids, with the model's effort ids (thinking options) and default when it has any. */
 function modelLines(catalog: readonly ProviderInfo[]): string[] {
-  return catalog.filter((provider) => provider.ready).map((provider) => `- ${provider.id}: ${provider.models.map((model) => model.id).join(", ")}`);
+  const model = (entry: ProviderInfo["models"][number]) =>
+    entry.efforts?.length ? `${entry.id} (effort: ${entry.efforts.map((option) => option.id).join("|")}${entry.defaultEffort ? `; default ${entry.defaultEffort}` : ""})` : entry.id;
+  return catalog.filter((provider) => provider.ready).map((provider) => `- ${provider.id}: ${provider.models.map(model).join(", ")}`);
 }
+
+const EFFORT_GUIDE =
+  '- Set each role\'s and the orchestrator\'s effort by the nature of its work, using only an effort id listed for its model above, or "" for the model default: "low" for routine verification, running tests, QA, docs or release work; "" or "medium" for ordinary implementation; "high" for architecture, core design or hard debugging. Use "" when the model lists no effort ids.';
 
 /** The JSON object in a planner's final message, tolerating a code fence or text around it. */
 function jsonIn(message: string | null, what: string): { ok: true; value: unknown } | { ok: false; errors: string[] } {
@@ -73,6 +79,7 @@ export function plannerPrompt(goal: string, catalog: readonly ProviderInfo[]): s
     "",
     "Rules:",
     "- Look around the repository to fit roles and folders to what is there. Do not create, change or delete any file.",
+    EFFORT_GUIDE,
     "- Pick 2 to 6 roles that do clearly separate work. Prefer different providers where they suit the work better (for example one provider for visual design, another for audio).",
     "- Give each role a short lowercase name, the folders it owns (relative paths, may be empty), and one or two sentences of instructions.",
     '- The orchestrator gets the workspace "orchestrator" and a strong reasoning model.',
@@ -117,6 +124,8 @@ export function teamEditPrompt(request: string, draft: Team, catalog: readonly P
     "- Keep roles the request does not affect exactly as they are. Change the orchestrator's provider/model and revise the goal when requested.",
     `- Keep the orchestrator workspace exactly ${JSON.stringify(draft.orchestrator.workspace)} and version ${draft.version}.`,
     "- Use only the listed provider/model ids and give each role a unique name.",
+    EFFORT_GUIDE,
+    "- Keep a role's or the orchestrator's effort unless the request or a change of its work or model calls for another.",
     "- Answer with the full team JSON only, using exactly these keys and no others:",
     JSON.stringify({ ...EXAMPLE, orchestrator: { ...EXAMPLE.orchestrator, workspace: draft.orchestrator.workspace } }, null, 2),
   ].join("\n");

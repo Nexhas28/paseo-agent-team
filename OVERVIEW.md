@@ -27,7 +27,7 @@ request → orchestrator → roles (each with its own provider/model) → result
 
 ### Reviewing a proposal
 
-- Review the names, models, folders and instructions of every role before you press **Apply**. Every role runs in the orchestrator's workspace.
+- Review the names, models, folders and instructions of every role before you press **Apply**. Every role runs in the orchestrator's workspace. Each role and the orchestrator has an **Effort** picker next to its model, with **Default** and the model's own options; it is cleared when a new model lacks the chosen effort, and Apply rejects an effort the model does not offer. The AI proposal and AI edits choose `low` for routine roles such as verification, QA, test running, docs and release, and a higher effort for design and core work; you can change it.
 - A blank role is named `role`. If that name is already in use, it gets a `#` and four random uppercase hex characters, such as `role#4F2A`.
 - **Edit team with AI**: type a request under the role list. A request that names a role, or whose work fits one, changes that role; a new role is added only when asked for or when no role fits. A planner proposes the revised team, which is applied to the draft at once with a notice of what changed. **Undo** and **Redo** step through AI edits. Nothing is written to the team file until you press **Apply**.
 - **Edit instructions** opens a dialog with the full instructions. **Improve with AI** asks an instructions planner to propose a rewrite, which you can apply or discard. **Save** only updates the draft; the team's file is written by **Apply**.
@@ -40,7 +40,7 @@ Apply does four things in order:
 
 1. Writes the team to its own file. A new team goes to `.agents/teams/<orchestrator workspace>.json` in the registered project root. A team that already has a file keeps it, including the older `.agents/team.json`.
 2. Reuses a project workspace whose title matches the orchestrator's workspace, or creates it.
-3. Starts an orchestrator. If the team's orchestrator is already running on the same provider and model, it is told to re-read the team instead, so no second orchestrator starts. Apply also refuses a team that uses a workspace another team of the project already uses.
+3. Starts an orchestrator. If the team's orchestrator is already running on the same provider, model and effort, it is told to re-read the team instead, so no second orchestrator starts. Changing only its effort starts a new orchestrator, as a model change does. Apply also refuses a team that uses a workspace another team of the project already uses.
 4. Archives the project's plugin-labelled planner agents and any unused, otherwise empty `Team planner` workspace. If cleanup fails, the team is still applied and the failure is shown as a warning.
 
 Apply may also write the allow rules described under Agent modes and permissions. After Apply you are taken to the orchestrator's workspace.
@@ -49,7 +49,7 @@ Apply may also write the allow rules described under Agent modes and permissions
 
 Press **Open orchestrator** after applying, or find the agent titled **Orchestrator** in the orchestrator's workspace. Talk to it in plain language, for example: "Redesign the title screen and add jump and coin sounds. Report back when both are done."
 
-- The orchestrator splits the request by role and starts each role's agent in the orchestrator's workspace, with that role's provider and model. It uses `paseo run`, or Paseo's `create_agent` tool for a role that uses the Auto Accept feature.
+- The orchestrator splits the request by role and starts each role's agent in the orchestrator's workspace, with that role's provider and model. It uses `paseo run`, or Paseo's `create_agent` tool for a role that uses the Auto Accept feature. Each role's agent gets the role's effort, passed as `--thinking` with `paseo run` or as `thinkingOptionId` with Paseo tools.
 - Before starting a role, it looks for an existing agent of that role, found by its `role=<name>` label, and continues that agent instead of starting a new one.
 - Each agent it starts is titled `<role>#<id>` (for example `ui#ADB2`) and labelled `role=<role>`, so several agents of one role can be told apart.
 - It waits for the results and summarizes what each role did.

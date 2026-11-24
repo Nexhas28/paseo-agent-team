@@ -28,10 +28,10 @@ describe("orchestratorPrompt", () => {
   });
 
   it("lists every role with its provider/model, mode and folders, and no per-role workspace column", () => {
-    expect(prompt).toContain("| Role | Provider/model | Mode | Folders |");
+    expect(prompt).toContain("| Role | Provider/model | Mode | Effort | Folders |");
     expect(prompt).not.toContain("| Workspace |");
-    expect(prompt).toContain("| design | codex/gpt-6.1-sol | full-access | src/ui, assets/images |");
-    expect(prompt).toContain("| sound | antigravity/gemini-4-argon-high | default | (any) |");
+    expect(prompt).toContain("| design | codex/gpt-6.1-sol | full-access | default | src/ui, assets/images |");
+    expect(prompt).toContain("| sound | antigravity/gemini-4-argon-high | default | default | (any) |");
     expect(prompt).toContain("- design: Owns UI and art.");
   });
 
@@ -81,10 +81,10 @@ describe("teamChangedMessage", () => {
 
   it("contains the team table with the Mode column and no per-role workspace column", () => {
     const message = teamChangedMessage(team, modes, ".agents/team.json");
-    expect(message).toContain("| Role | Provider/model | Mode | Folders |");
+    expect(message).toContain("| Role | Provider/model | Mode | Effort | Folders |");
     expect(message).not.toContain("| Workspace |");
-    expect(message).toContain("| design | codex/gpt-6.1-sol | full-access | src/ui, assets/images |");
-    expect(message).toContain("| sound | antigravity/gemini-4-argon-high | default | (any) |");
+    expect(message).toContain("| design | codex/gpt-6.1-sol | full-access | default | src/ui, assets/images |");
+    expect(message).toContain("| sound | antigravity/gemini-4-argon-high | default | default | (any) |");
   });
 
   it("says earlier per-role workspace instructions no longer apply, and where roles run", () => {
@@ -130,10 +130,10 @@ describe("role features", () => {
 
   it("adds a Features column with the toggle for the role that has it and - for the others", () => {
     for (const text of [orchestratorPrompt(team, modes, file, features), teamChangedMessage(team, modes, file, features)]) {
-      expect(text).toContain("| Role | Provider/model | Mode | Folders | Features |");
+      expect(text).toContain("| Role | Provider/model | Mode | Effort | Folders | Features |");
       expect(text).toContain("| --- | --- | --- | --- | --- |");
-      expect(text).toContain('| design | codex/gpt-6.1-sol | full-access | src/ui, assets/images | {"auto_accept":true} |');
-      expect(text).toContain("| sound | antigravity/gemini-4-argon-high | default | (any) | - |");
+      expect(text).toContain('| design | codex/gpt-6.1-sol | full-access | default | src/ui, assets/images | {"auto_accept":true} |');
+      expect(text).toContain("| sound | antigravity/gemini-4-argon-high | default | default | (any) | - |");
     }
   });
 

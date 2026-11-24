@@ -6,7 +6,7 @@ const ProviderInfoSchema = z.object({
   id: z.string(),
   ready: z.boolean(),
   status: z.string(),
-  models: z.array(z.object({ id: z.string(), label: z.string() })),
+  models: z.array(z.object({ id: z.string(), label: z.string(), efforts: z.array(z.object({ id: z.string(), label: z.string() })).optional(), defaultEffort: z.string().optional() })),
 });
 
 const TeamErrorSchema = z.object({ target: z.string(), message: z.string() });
@@ -146,8 +146,8 @@ export const teamEditProposeRpc = defineRpc({
     team: z.object({
       version: z.literal(1),
       goal: z.string(),
-      orchestrator: z.object({ workspace: z.string(), provider: z.string(), model: z.string() }),
-      roles: z.array(z.object({ name: z.string(), provider: z.string(), model: z.string(), folders: z.array(z.string()), instructions: z.string() })),
+      orchestrator: z.object({ workspace: z.string(), provider: z.string(), model: z.string(), effort: z.string().optional() }),
+      roles: z.array(z.object({ name: z.string(), provider: z.string(), model: z.string(), effort: z.string().optional(), folders: z.array(z.string()), instructions: z.string() })),
     }),
   })),
   output: z.object({ agentId: z.string() }),

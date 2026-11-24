@@ -18,8 +18,11 @@ export function applyTeamEdit(draft: Team, proposed: Team): Team {
 export function summarizeTeamEdit(draft: Team, edited: Team): {
   added: string[];
   removed: string[];
-  changed: { name: string; fields: ("provider" | "model" | "folders" | "instructions")[] }[];
+  changed: { name: string; fields: ("provider" | "model" | "effort" | "folders" | "instructions")[] }[];
+  /** The orchestrator's provider or model changed. */
   orchestrator: boolean;
+  /** The orchestrator's effort changed. */
+  orchestratorEffort: boolean;
   goal: boolean;
 } {
   const before = new Map(draft.roles.map((role) => [role.name.trim(), role]));
@@ -29,7 +32,7 @@ export function summarizeTeamEdit(draft: Team, edited: Team): {
     const previous = before.get(name);
     if (!previous) continue;
     const fields: ReturnType<typeof summarizeTeamEdit>["changed"][number]["fields"] = [];
-    for (const field of ["provider", "model", "folders", "instructions"] as const) {
+    for (const field of ["provider", "model", "effort", "folders", "instructions"] as const) {
       const different = field === "folders"
         ? new Set(previous.folders).size !== new Set(role.folders).size || previous.folders.some((folder) => !role.folders.includes(folder))
         : previous[field] !== role[field];
@@ -42,6 +45,7 @@ export function summarizeTeamEdit(draft: Team, edited: Team): {
     removed: [...before.keys()].filter((name) => !after.has(name)),
     changed,
     orchestrator: draft.orchestrator.provider !== edited.orchestrator.provider || draft.orchestrator.model !== edited.orchestrator.model,
+    orchestratorEffort: draft.orchestrator.effort !== edited.orchestrator.effort,
     goal: draft.goal !== edited.goal,
   };
 }

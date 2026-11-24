@@ -3,7 +3,7 @@ import type { PluginScreenProps, PluginWorkspacePanelProps } from "@getpaseo/plu
 import { usePaseo, useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { withFreeWorkspaces } from "../shared/apply-plan";
 import { foldersText, newRole, parseFolders } from "../shared/draft";
@@ -50,6 +50,8 @@ export function styles(colors: Colors, compact: boolean) {
     roleCard: { flex: 1, minWidth: 0 },
     roleSpacer: { flex: 1, minWidth: 0 },
     input: { borderWidth: 1, borderColor: colors.border, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, color: colors.foreground, backgroundColor: colors.surface0 },
+    inputCompact: { borderWidth: 1, borderColor: colors.border, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3, fontSize: 12, color: colors.foreground, backgroundColor: colors.surface0 },
+    selectCompact: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 },
     row: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6, alignItems: "center" as const },
     button: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, backgroundColor: colors.accent },
     buttonText: { color: colors.accentForeground, fontWeight: "600" as const },
@@ -64,10 +66,10 @@ export function styles(colors: Colors, compact: boolean) {
 
 export type Styles = ReturnType<typeof styles>;
 
-export function Button({ s, label, onPress, disabled, secondary }: { s: Styles; label: string; onPress(): void; disabled?: boolean; secondary?: boolean }) {
+export function Button({ s, label, onPress, disabled, secondary, compact }: { s: Styles; label: string; onPress(): void; disabled?: boolean; secondary?: boolean; compact?: boolean }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={[secondary ? s.secondary : s.button, disabled ? { opacity: 0.5 } : null]}>
-      <Text style={secondary ? s.text : s.buttonText}>{label}</Text>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={[secondary ? s.secondary : s.button, compact ? { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5 } : null, disabled ? { opacity: 0.5 } : null]}>
+      <Text style={[secondary ? s.text : s.buttonText, compact ? { fontSize: 12 } : null]}>{label}</Text>
     </Pressable>
   );
 }
@@ -75,23 +77,23 @@ export function Button({ s, label, onPress, disabled, secondary }: { s: Styles; 
 type SelectRequest = { label: string; options: readonly string[]; value: string; onChange(value: string): void };
 const SelectContext = createContext<(request: SelectRequest) => void>(() => {});
 
-function Select({ s, label, options, value, onChange }: { s: Styles; label: string; options: readonly string[]; value: string; onChange(value: string): void }) {
+function Select({ s, label, options, value, onChange, compact }: { s: Styles; label: string; options: readonly string[]; value: string; onChange(value: string): void; compact?: boolean }) {
   const openSelect = useContext(SelectContext);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${label}: ${value}`}
       onPress={() => openSelect({ label, options, value, onChange })}
-      style={s.select}
+      style={compact ? s.selectCompact : s.select}
     >
-      <Text style={s.text}>{value || "—"}</Text>
+      <Text style={[s.text, compact ? { fontSize: 12 } : null]}>{value || "—"}</Text>
       <Text style={s.muted}>▾</Text>
     </Pressable>
   );
 }
 
 /** Provider and model pickers limited to what this host can run. */
-function ModelPicker({ s, catalog, provider, model, onChange }: { s: Styles; catalog: readonly ProviderInfo[]; provider: string; model: string; onChange(next: { provider: string; model: string }): void }) {
+function ModelPicker({ s, catalog, provider, model, onChange, extra }: { s: Styles; catalog: readonly ProviderInfo[]; provider: string; model: string; onChange(next: { provider: string; model: string }): void; extra?: ReactNode }) {
   const { t } = useTranslation(messages);
   const ready = catalog.filter((entry) => entry.ready);
   const models = ready.find((entry) => entry.id === provider)?.models.map((entry) => entry.id) ?? [];
@@ -100,6 +102,7 @@ function ModelPicker({ s, catalog, provider, model, onChange }: { s: Styles; cat
       <Text style={s.muted}>{t("role.providerAndModel")}</Text>
       <Select
         s={s}
+        compact
         label={t("role.provider")}
         options={ready.map((entry) => entry.id)}
         value={provider}
@@ -107,8 +110,45 @@ function ModelPicker({ s, catalog, provider, model, onChange }: { s: Styles; cat
           if (next !== provider) onChange({ provider: next, model: ready.find((entry) => entry.id === next)?.models[0]?.id ?? "" });
         }}
       />
-      <Select s={s} label={t("role.model")} options={models} value={model} onChange={(next) => onChange({ provider, model: next })} />
+      <Select s={s} compact label={t("role.model")} options={models} value={model} onChange={(next) => onChange({ provider, model: next })} />
+      {extra}
     </View>
+  );
+}
+
+/** The entity with the new provider and model; its effort is kept only when the new model offers it, so the key is dropped otherwise. */
+function withModel<T extends { effort?: string }>(catalog: readonly ProviderInfo[], entity: T, next: { provider: string; model: string }): T {
+  const efforts = catalog.find((entry) => entry.id === next.provider)?.models.find((entry) => entry.id === next.model)?.efforts ?? [];
+  const { effort, ...rest } = entity;
+  return { ...rest, ...next, ...(effort && efforts.some((option) => option.id === effort) ? { effort } : {}) } as unknown as T;
+}
+
+/** The entity with the effort set, or without the key when it is undefined (the model's default). */
+function withEffort<T extends { effort?: string }>(entity: T, effort: string | undefined): T {
+  const { effort: _previous, ...rest } = entity;
+  return (effort ? { ...rest, effort } : rest) as T;
+}
+
+/** Effort picker for the selected model: the model's default first, then its efforts; hidden when the model has none. */
+function EffortPicker({ s, catalog, provider, model, effort, onChange }: { s: Styles; catalog: readonly ProviderInfo[]; provider: string; model: string; effort: string | undefined; onChange(effort: string | undefined): void }) {
+  const { t } = useTranslation(messages);
+  const info = catalog.find((entry) => entry.id === provider)?.models.find((entry) => entry.id === model);
+  const efforts = info?.efforts ?? [];
+  if (!efforts.length) return null;
+  const labelOf = (id: string) => efforts.find((option) => option.id === id)?.label ?? id;
+  const defaultOption = t("role.effortDefault", { effort: info?.defaultEffort ? labelOf(info.defaultEffort) : "—" });
+  return (
+    <>
+      <Text style={s.muted}>{t("role.effort")}</Text>
+      <Select
+        s={s}
+        compact
+        label={t("role.effort")}
+        options={[defaultOption, ...efforts.map((option) => option.label)]}
+        value={effort ? labelOf(effort) : defaultOption}
+        onChange={(next) => onChange(next === defaultOption ? undefined : efforts.find((option) => option.label === next)?.id)}
+      />
+    </>
   );
 }
 
@@ -128,12 +168,12 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
   }, [role.name, role.folders]);
   const foldersExpanded = showFolders || role.folders.length > 0;
   return (
-    <View style={[s.card, s.roleCard]}>
+    <View style={[s.card, s.roleCard, { padding: 8, gap: 4 }]}>
       <View style={{ gap: 4 }}>
         <Text style={s.muted}>{t("role.name")}</Text>
         <View style={s.row}>
           <TextInput
-            style={[s.input, { flex: 1, minWidth: 0 }]}
+            style={[s.inputCompact, { flex: 1, minWidth: 0 }]}
             value={role.name}
             placeholder={t("role.name")}
             onChangeText={(name) => {
@@ -141,15 +181,15 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
               onChange({ ...role, name });
             }}
           />
-          <Button s={s} secondary label={t("role.remove")} onPress={onRemove} />
+          <Button s={s} compact secondary label={t("role.remove")} onPress={onRemove} />
         </View>
       </View>
-      <ModelPicker s={s} catalog={catalog} provider={role.provider} model={role.model} onChange={(next) => onChange({ ...role, ...next })} />
+      <ModelPicker s={s} catalog={catalog} provider={role.provider} model={role.model} onChange={(next) => onChange(withModel(catalog, role, next))} extra={<EffortPicker s={s} catalog={catalog} provider={role.provider} model={role.model} effort={role.effort} onChange={(effort) => onChange(withEffort(role, effort))} />} />
       {foldersExpanded ? (
         <View style={{ gap: 4 }}>
           <Text style={s.muted}>{t("role.folders")}</Text>
           <TextInput
-            style={s.input}
+            style={s.inputCompact}
             value={folders}
             placeholder={t("role.folders")}
             onChangeText={(text) => {
@@ -160,7 +200,7 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
         </View>
       ) : (
         <View style={s.row}>
-          <Button s={s} secondary label={t("role.setFolders")} onPress={() => setShowFolders(true)} />
+          <Button s={s} compact secondary label={t("role.setFolders")} onPress={() => setShowFolders(true)} />
         </View>
       )}
       <View style={{ gap: 4 }}>
@@ -171,7 +211,7 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
           <Text style={s.muted}>{t("role.noInstructions")}</Text>
         )}
         <View style={s.row}>
-          <Button s={s} secondary label={t("role.editInstructions")} onPress={onEditInstructions} />
+          <Button s={s} compact secondary label={t("role.editInstructions")} onPress={onEditInstructions} />
         </View>
       </View>
     </View>
@@ -361,14 +401,14 @@ function InstructionsDialog({
   );
 }
 
-function TeamModel({ provider, model, colors, icons }: { provider: string; model: string; colors: Colors; icons: Map<string, string | undefined> }) {
+function TeamModel({ provider, model, effort, colors, icons }: { provider: string; model: string; effort?: string; colors: Colors; icons: Map<string, string | undefined> }) {
   const icon = providerIcon(provider, icons.get(provider));
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
       <View style={{ width: 24, height: 24, borderRadius: 8, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
         {icon.kind === "svg" ? <Icon icon={{ svg: icon.svg }} size={14} color={colors.foreground} /> : <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 12 }}>{icon.letter}</Text>}
       </View>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{model}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{effort ? `${model} · ${effort}` : model}</Text>
     </View>
   );
 }
@@ -395,7 +435,7 @@ function CurrentTeamTree({ team, s, colors, compact, icons }: { team: Team; s: S
             <View style={{ flex: 1, minWidth: 0, paddingVertical: 5 }}>
               <View style={[s.card, { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, backgroundColor: colors.surface0 }]}>
                 <Text style={[s.text, { fontWeight: "700", minWidth: 88, maxWidth: "100%", flexShrink: 1 }]}>{role.name}</Text>
-                <TeamModel provider={role.provider} model={role.model} colors={colors} icons={icons} />
+                <TeamModel provider={role.provider} model={role.model} effort={role.effort} colors={colors} icons={icons} />
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, minWidth: 0, flexShrink: 1 }}>
                   {(role.folders.length ? role.folders.slice(0, 3) : [t("current.noFolderLimit")]).map((folder, at) => (
                     <View key={at} style={{ borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3, backgroundColor: colors.surface2, maxWidth: "100%" }}>
@@ -885,16 +925,16 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
         <SelectContext.Provider value={openSelect}>
           <View style={{ gap: 10 }}>
             <Text style={s.title}>{t("review.title")}</Text>
-            <View style={s.orchestratorCard}>
+            <View style={[s.orchestratorCard, { padding: 8, gap: 4 }]}>
               <Text style={s.orchestratorLabel}>{t("review.orchestrator")}</Text>
               {here === null && !(data.team && data.sharedWorkspaces.length) ? (
-                <TextInput style={s.input} value={draft.orchestrator.workspace} placeholder={t("role.workspace")} onChangeText={(workspace) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, workspace } } : current))} />
+                <TextInput style={s.inputCompact} value={draft.orchestrator.workspace} placeholder={t("role.workspace")} onChangeText={(workspace) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, workspace } } : current))} />
               ) : here === null ? (
                 <Text style={s.muted}>{draft.orchestrator.workspace}</Text>
               ) : (
                 <Text style={s.text}>{t("review.orchestratorHere", { workspace: here })}</Text>
               )}
-              <ModelPicker s={s} catalog={catalog} provider={draft.orchestrator.provider} model={draft.orchestrator.model} onChange={(next) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, ...next } } : current))} />
+              <ModelPicker s={s} catalog={catalog} provider={draft.orchestrator.provider} model={draft.orchestrator.model} onChange={(next) => setDraft((current) => (current ? { ...current, orchestrator: withModel(catalog, current.orchestrator, next) } : current))} extra={<EffortPicker s={s} catalog={catalog} provider={draft.orchestrator.provider} model={draft.orchestrator.model} effort={draft.orchestrator.effort} onChange={(effort) => setDraft((current) => (current ? { ...current, orchestrator: withEffort(current.orchestrator, effort) } : current))} />} />
             </View>
             <View style={s.roleGroupWrap}>
               <View style={s.roleConnector} />
@@ -915,13 +955,13 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                     ))}
                   </View>
                 ))}
-                <Button s={s} secondary label={t("review.addRole")} onPress={() => setDraft((current) => (current ? { ...current, roles: [...current.roles, newRole(catalog, current.roles.map((role) => role.name))] } : current))} />
+                <Button s={s} compact secondary label={t("review.addRole")} onPress={() => setDraft((current) => (current ? { ...current, roles: [...current.roles, newRole(catalog, current.roles.map((role) => role.name))] } : current))} />
                 <View style={s.card}>
-                  <TextInput style={s.input} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
+                  <TextInput style={[s.inputCompact, { minHeight: 36 }]} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
                   <View style={s.row}>
-                    <Button s={s} secondary label={t("review.editTeamWithAi")} disabled={!editRequest.trim() || editBusy} onPress={() => startTeamEdit.mutate(draft)} />
-                    <Button s={s} secondary label={t("review.undo")} disabled={!history.past.length || editBusy} onPress={() => { const result = undo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
-                    <Button s={s} secondary label={t("review.redo")} disabled={!history.future.length || editBusy} onPress={() => { const result = redo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
+                    <Button s={s} compact secondary label={t("review.editTeamWithAi")} disabled={!editRequest.trim() || editBusy} onPress={() => startTeamEdit.mutate(draft)} />
+                    <Button s={s} compact secondary label={t("review.undo")} disabled={!history.past.length || editBusy} onPress={() => { const result = undo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
+                    <Button s={s} compact secondary label={t("review.redo")} disabled={!history.future.length || editBusy} onPress={() => { const result = redo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
                   </View>
                   {editPlanning.data?.status === "failed" ? editPlanning.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
                   {editPlanning.error ? <Text style={s.danger}>{String(editPlanning.error)}</Text> : null}
@@ -932,8 +972,9 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                       {editSummary.removed.map((name) => <Text key={`removed-${name}`} style={s.text}>{t("review.editRemoved", { name })}</Text>)}
                       {editSummary.changed.map(({ name, fields }) => <Text key={`changed-${name}`} style={s.text}>{t("review.editChanged", { name, fields: fields.map((field) => t(`role.${field}`)).join(", ") })}</Text>)}
                       {editSummary.orchestrator ? <Text style={s.text}>{t("review.editOrchestratorChanged")}</Text> : null}
+                      {editSummary.orchestratorEffort ? <Text style={s.text}>{t("review.editOrchestratorEffortChanged")}</Text> : null}
                       {editSummary.goal ? <Text style={s.text}>{t("review.editGoalChanged")}</Text> : null}
-                      {!editSummary.added.length && !editSummary.removed.length && !editSummary.changed.length && !editSummary.orchestrator && !editSummary.goal ? <Text style={s.muted}>{t("review.editNoChanges")}</Text> : null}
+                      {!editSummary.added.length && !editSummary.removed.length && !editSummary.changed.length && !editSummary.orchestrator && !editSummary.orchestratorEffort && !editSummary.goal ? <Text style={s.muted}>{t("review.editNoChanges")}</Text> : null}
                       {editNotice.validation.map((error) => <Text key={error.target + error.message} style={s.danger}>{error.target}: {error.message}</Text>)}
 
                     </View>
@@ -944,8 +985,8 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
             </View>
             {problems.map((problem) => <Text key={problem} style={s.danger}>{problem}</Text>)}
             <View style={s.row}>
-              <Button s={s} label={t("review.apply")} disabled={problems.length > 0 || applied.isPending} onPress={() => applied.mutate(draft)} />
-              <Button s={s} secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); cancelTeamEdit(); resetEditHistory(); setEditRequest(""); setPicker(null); setEditingRoleIndex(null); setDraft(null); setPlannerId(null); }} />
+              <Button s={s} compact label={t("review.apply")} disabled={problems.length > 0 || applied.isPending} onPress={() => applied.mutate(draft)} />
+              <Button s={s} compact secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); cancelTeamEdit(); resetEditHistory(); setEditRequest(""); setPicker(null); setEditingRoleIndex(null); setDraft(null); setPlannerId(null); }} />
             </View>
           </View>
         </SelectContext.Provider>

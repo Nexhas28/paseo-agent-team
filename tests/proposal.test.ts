@@ -29,8 +29,8 @@ describe("plannerPrompt", () => {
     const start = prompt.indexOf("{");
     const example = JSON.parse(prompt.slice(start, prompt.lastIndexOf("}") + 1));
     expect(Object.keys(example)).toEqual(["version", "goal", "orchestrator", "roles"]);
-    expect(Object.keys(example.orchestrator)).toEqual(["workspace", "provider", "model"]);
-    expect(Object.keys(example.roles[0])).toEqual(["name", "provider", "model", "folders", "instructions"]);
+    expect(Object.keys(example.orchestrator)).toEqual(["workspace", "provider", "model", "effort"]);
+    expect(Object.keys(example.roles[0])).toEqual(["name", "provider", "model", "effort", "folders", "instructions"]);
   });
 
   it("forbids changing files", () => {

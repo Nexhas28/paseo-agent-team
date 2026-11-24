@@ -49,7 +49,7 @@ describe("applyTeamEdit", () => {
 
 describe("summarizeTeamEdit", () => {
   it("reports nothing for an identical team, and nothing for folder order alone", () => {
-    const empty = { added: [], removed: [], changed: [], orchestrator: false, goal: false };
+    const empty = { added: [], removed: [], changed: [], orchestrator: false, orchestratorEffort: false, goal: false };
     expect(summarizeTeamEdit(draft, draft)).toEqual(empty);
     const reordered = edited({ roles: [{ ...draft.roles[0]!, folders: ["packages/ui", "apps/web"] }, draft.roles[1]!] });
     expect(summarizeTeamEdit(draft, reordered)).toEqual(empty);
