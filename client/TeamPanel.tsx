@@ -4,77 +4,22 @@ import { usePaseo, useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { withFreeWorkspaces } from "../shared/apply-plan";
+import { blankOrchestratorModel, effortChoices, latestResult, noticesOf, outcomeToken, pendingPickup, pollPhase, proposalPollInterval, reservedByOtherTeam } from "./panel-logic";
 import { foldersText, newRole, parseFolders } from "../shared/draft";
 import { EMPTY_HISTORY, record, undo, redo, type DraftHistory } from "../shared/draft-history";
 import { messages } from "./i18n";
-import { teamApplyRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamRestartOrchestratorRpc, teamEditProposalRpc, teamEditProposeRpc, teamShareRpc, teamUnshareRpc } from "../shared/rpc";
+import { Button, Errors, Field, Group, Notice, Prompt, webAria } from "./ui/controls";
+import { PickerModal, type SelectRequest } from "./ui/Picker";
+import { styles, type Colors, type Styles } from "./ui/styles";
+import { teamApplyRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamPlannerCancelRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamRestartOrchestratorRpc, teamEditProposalRpc, teamEditProposeRpc, teamShareRpc, teamUnshareRpc } from "../shared/rpc";
 import { checkTeam, type Role, type Team } from "../shared/team";
 import { applyTeamEdit, summarizeTeamEdit } from "../shared/team-edit";
 import { providerIcon } from "../shared/provider-icons";
 import { copyTeamTo, isSharedWith, TEAMS_DIR, workspaceClashes } from "../shared/team-files";
 import { validateTeam, type ProviderInfo } from "../shared/validate";
 
-type Colors = PluginWorkspacePanelProps["theme"]["colors"];
-
-export function styles(colors: Colors, compact: boolean) {
-  return {
-    screen: { flex: 1, backgroundColor: colors.surface0 },
-    body: { padding: compact ? 12 : 20, gap: 12 },
-    title: { color: colors.foreground, fontSize: 16, fontWeight: "600" as const },
-    text: { color: colors.foreground },
-    muted: { color: colors.foregroundMuted, fontSize: 12 },
-    danger: { color: colors.statusDanger, fontSize: 12 },
-    success: { color: colors.statusSuccess },
-    card: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 10, gap: 6, backgroundColor: colors.surface1 },
-    orchestratorCard: {
-      borderTopWidth: 1,
-      borderRightWidth: 1,
-      borderBottomWidth: 1,
-      borderLeftWidth: 6,
-      borderTopColor: colors.border,
-      borderRightColor: colors.border,
-      borderBottomColor: colors.border,
-      borderLeftColor: colors.accent,
-      borderRadius: 8,
-      padding: 10,
-      gap: 6,
-      backgroundColor: colors.surface2,
-    },
-    orchestratorLabel: { color: colors.accent, fontSize: 11, fontWeight: "700" as const, textTransform: "uppercase" as const, letterSpacing: 0.5 },
-    roleGroupWrap: { flexDirection: "row" as const, paddingLeft: 2, gap: 20 },
-    roleConnector: { width: 2, borderRadius: 1, backgroundColor: colors.accent, opacity: 0.4 },
-    roleGroup: { flex: 1, minWidth: 0, gap: 10 },
-    roleRow: { flexDirection: "row" as const, alignItems: "stretch" as const, gap: 10 },
-    roleCard: { flex: 1, minWidth: 0 },
-    roleSpacer: { flex: 1, minWidth: 0 },
-    input: { borderWidth: 1, borderColor: colors.border, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, color: colors.foreground, backgroundColor: colors.surface0 },
-    inputCompact: { borderWidth: 1, borderColor: colors.border, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3, fontSize: 12, color: colors.foreground, backgroundColor: colors.surface0 },
-    selectCompact: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 },
-    row: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6, alignItems: "center" as const },
-    button: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, backgroundColor: colors.accent },
-    buttonText: { color: colors.accentForeground, fontWeight: "600" as const },
-    secondary: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.border },
-    select: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 },
-    option: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 },
-    optionActive: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.surface2 },
-    optionOn: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.accent },
-    optionOnActive: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: colors.foreground, backgroundColor: colors.accent },
-  };
-}
-
-export type Styles = ReturnType<typeof styles>;
-
-export function Button({ s, label, onPress, disabled, secondary, compact }: { s: Styles; label: string; onPress(): void; disabled?: boolean; secondary?: boolean; compact?: boolean }) {
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={[secondary ? s.secondary : s.button, compact ? { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5 } : null, disabled ? { opacity: 0.5 } : null]}>
-      <Text style={[secondary ? s.text : s.buttonText, compact ? { fontSize: 12 } : null]}>{label}</Text>
-    </Pressable>
-  );
-}
-
-type SelectRequest = { label: string; options: readonly string[]; value: string; onChange(value: string): void };
 const SelectContext = createContext<(request: SelectRequest) => void>(() => {});
 
 function Select({ s, label, options, value, onChange, compact }: { s: Styles; label: string; options: readonly string[]; value: string; onChange(value: string): void; compact?: boolean }) {
@@ -82,12 +27,13 @@ function Select({ s, label, options, value, onChange, compact }: { s: Styles; la
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${label}: ${value}`}
+      accessibilityLabel={`${label}: ${value || "—"}`}
+      {...webAria({ "aria-haspopup": "dialog" })}
       onPress={() => openSelect({ label, options, value, onChange })}
       style={compact ? s.selectCompact : s.select}
     >
       <Text style={[s.text, compact ? { fontSize: 12 } : null]}>{value || "—"}</Text>
-      <Text style={s.muted}>▾</Text>
+      <Text aria-hidden style={s.muted}>▾</Text>
     </Pressable>
   );
 }
@@ -129,11 +75,11 @@ function withEffort<T extends { effort?: string }>(entity: T, effort: string | u
   return (effort ? { ...rest, effort } : rest) as T;
 }
 
-/** Effort picker for the selected model: the model's default first, then its efforts; hidden when the model has none. */
+/** Effort picker for the selected model: the model's default first, then its efforts; hidden when the model has none and no effort is set. */
 function EffortPicker({ s, catalog, provider, model, effort, onChange }: { s: Styles; catalog: readonly ProviderInfo[]; provider: string; model: string; effort: string | undefined; onChange(effort: string | undefined): void }) {
   const { t } = useTranslation(messages);
   const info = catalog.find((entry) => entry.id === provider)?.models.find((entry) => entry.id === model);
-  const efforts = info?.efforts ?? [];
+  const efforts = effortChoices(info?.efforts ?? [], effort);
   if (!efforts.length) return null;
   const labelOf = (id: string) => efforts.find((option) => option.id === id)?.label ?? id;
   const defaultOption = t("role.effortDefault", { effort: info?.defaultEffort ? labelOf(info.defaultEffort) : "—" });
@@ -167,12 +113,15 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
     }
   }, [role.name, role.folders]);
   const foldersExpanded = showFolders || role.folders.length > 0;
+  const roleName = role.name.trim() || t("role.name");
   return (
-    <View style={[s.card, s.roleCard, { padding: 8, gap: 4 }]}>
+    <Group label={roleName} style={[s.card, s.roleCard, { padding: 8, gap: 4 }]}>
       <View style={{ gap: 4 }}>
         <Text style={s.muted}>{t("role.name")}</Text>
         <View style={s.row}>
-          <TextInput
+          <Field
+            label={t("role.name")}
+            labelHidden
             style={[s.inputCompact, { flex: 1, minWidth: 0 }]}
             value={role.name}
             placeholder={t("role.name")}
@@ -181,23 +130,22 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
               onChange({ ...role, name });
             }}
           />
-          <Button s={s} compact secondary label={t("role.remove")} onPress={onRemove} />
+          <Button s={s} compact secondary label={t("role.remove")} accessibilityLabel={t("role.removeNamed", { role: roleName })} onPress={onRemove} />
         </View>
       </View>
       <ModelPicker s={s} catalog={catalog} provider={role.provider} model={role.model} onChange={(next) => onChange(withModel(catalog, role, next))} extra={<EffortPicker s={s} catalog={catalog} provider={role.provider} model={role.model} effort={role.effort} onChange={(effort) => onChange(withEffort(role, effort))} />} />
       {foldersExpanded ? (
-        <View style={{ gap: 4 }}>
-          <Text style={s.muted}>{t("role.folders")}</Text>
-          <TextInput
-            style={s.inputCompact}
-            value={folders}
-            placeholder={t("role.folders")}
-            onChangeText={(text) => {
-              setFolders(text);
-              onChange({ ...role, folders: parseFolders(text) });
-            }}
-          />
-        </View>
+        <Field
+          label={t("role.folders")}
+          labelStyle={s.muted}
+          style={s.inputCompact}
+          value={folders}
+          placeholder={t("role.folders")}
+          onChangeText={(text) => {
+            setFolders(text);
+            onChange({ ...role, folders: parseFolders(text) });
+          }}
+        />
       ) : (
         <View style={s.row}>
           <Button s={s} compact secondary label={t("role.setFolders")} onPress={() => setShowFolders(true)} />
@@ -211,12 +159,15 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
           <Text style={s.muted}>{t("role.noInstructions")}</Text>
         )}
         <View style={s.row}>
-          <Button s={s} compact secondary label={t("role.editInstructions")} onPress={onEditInstructions} />
+          <Button s={s} compact secondary label={t("role.editInstructions")} accessibilityLabel={t("role.editInstructionsNamed", { role: roleName })} onPress={onEditInstructions} />
         </View>
       </View>
-    </View>
+    </Group>
   );
 }
+
+/** The server archives an edit or instructions planner once it answers; never ask it again on focus or reconnect. */
+const SETTLED_ONCE = { refetchOnWindowFocus: false, refetchOnReconnect: false } as const;
 
 /** Where the team goes: a workspace's project, or a project picked without a workspace. */
 type Target = { workspaceId: string } | { projectId: string };
@@ -241,6 +192,8 @@ function InstructionsDialog({
   const { t } = useTranslation(messages);
   const improve = useRpc(teamInstructionsImproveRpc);
   const instructionsProposal = useRpc(teamInstructionsProposalRpc);
+  const cancelPlanner = useRpc(teamPlannerCancelRpc);
+  const stopPlanner = (agentId: string) => void cancelPlanner({ agentId }).catch(() => {});
   const open = role !== null && team !== null;
   const [instructions, setInstructions] = useState("");
   const [request, setRequest] = useState("");
@@ -250,12 +203,22 @@ function InstructionsDialog({
   const [startError, setStartError] = useState<string | null>(null);
   const requestCounter = useRef(0);
 
+  // Forget the planner and archive it if one is still tracked, so a closed dialog stops spending tokens.
   const stopTracking = () => {
     requestCounter.current += 1;
     setStarting(false);
     setStartError(null);
+    if (plannerId) stopPlanner(plannerId);
     setPlannerId(null);
   };
+
+  // Unmounting (workspace switch, back to projects) skips the close path, so the planner is archived here, also one whose start answers late.
+  const unmount = useRef(() => {});
+  unmount.current = () => {
+    requestCounter.current += 1;
+    if (plannerId) stopPlanner(plannerId);
+  };
+  useEffect(() => () => unmount.current(), []);
 
   useEffect(() => {
     if (!open || !role) {
@@ -272,7 +235,8 @@ function InstructionsDialog({
     queryKey: ["workspace-agents", "instructions-proposal", plannerId],
     queryFn: () => instructionsProposal({ agentId: plannerId! }),
     enabled: plannerId !== null,
-    refetchInterval: (query) => (query.state.data?.status === "running" || !query.state.data ? 2000 : false),
+    refetchInterval: (query) => proposalPollInterval(query.state),
+    ...SETTLED_ONCE,
   });
 
   useEffect(() => {
@@ -286,6 +250,7 @@ function InstructionsDialog({
       const currentRequest = ++requestCounter.current;
       setStarting(true);
       setStartError(null);
+      if (plannerId) stopPlanner(plannerId);
       setPlannerId(null);
       setSuggestion(null);
       return { request: currentRequest };
@@ -302,7 +267,7 @@ function InstructionsDialog({
         },
       }),
     onSuccess: ({ agentId }, _vars, context) => {
-      if (requestCounter.current !== context.request) return;
+      if (requestCounter.current !== context.request) return stopPlanner(agentId);
       setStarting(false);
       setPlannerId(agentId);
     },
@@ -313,7 +278,7 @@ function InstructionsDialog({
     },
   });
 
-  const busy = starting || (plannerId !== null && planning.data?.status !== "failed");
+  const busy = starting || (plannerId !== null && !planning.isError && planning.data?.status !== "failed");
 
   const close = () => {
     stopTracking();
@@ -333,31 +298,32 @@ function InstructionsDialog({
       <Modal.Content>
         {open && role && team ? (
           <>
-            <TextInput
+            <Field
+              label={t("role.instructions")}
+              labelHidden
               style={[s.input, { minHeight: 120, textAlignVertical: "top" }]}
               value={instructions}
               placeholder={t("role.instructions")}
               multiline
               onChangeText={setInstructions}
             />
-            {suggestion !== null ? (
-              <View style={s.card}>
-                <Text style={s.text}>{suggestion}</Text>
-                <View style={s.row}>
-                  <Button
-                    s={s}
-                    label={t("role.applySuggestion")}
-                    onPress={() => {
-                      setInstructions(suggestion);
-                      setSuggestion(null);
-                    }}
-                  />
-                  <Button s={s} secondary label={t("role.discardSuggestion")} onPress={() => setSuggestion(null)} />
-                </View>
+            <Prompt open={suggestion !== null} announce={suggestion ?? ""} message={<Text style={s.text}>{suggestion}</Text>} style={s.card}>
+              <View style={s.row}>
+                <Button
+                  s={s}
+                  label={t("role.applySuggestion")}
+                  onPress={() => {
+                    if (suggestion !== null) setInstructions(suggestion);
+                    setSuggestion(null);
+                  }}
+                />
+                <Button s={s} secondary label={t("role.discardSuggestion")} onPress={() => setSuggestion(null)} />
               </View>
-            ) : null}
+            </Prompt>
             <View style={s.card}>
-              <TextInput
+              <Field
+                label={t("role.improveRequestPlaceholder")}
+                labelHidden
                 style={s.input}
                 value={request}
                 placeholder={t("role.improveRequestPlaceholder")}
@@ -372,16 +338,16 @@ function InstructionsDialog({
                   disabled={busy}
                   onPress={() => startImprove.mutate({ currentRole: role, currentTeam: team, currentInstructions: instructions, currentRequest: request })}
                 />
-                {busy ? (
-                  <>
-                    <ActivityIndicator color={accentColor} />
-                    <Text style={s.muted}>{t("role.instructionsPlanning")}</Text>
-                  </>
-                ) : null}
+                <Notice tone="status" announce={busy ? t("role.instructionsPlanning") : ""} style={s.row}>
+                  {busy ? (
+                    <>
+                      <ActivityIndicator color={accentColor} />
+                      <Text style={s.muted}>{t("role.instructionsPlanning")}</Text>
+                    </>
+                  ) : null}
+                </Notice>
               </View>
-              {planning.data?.status === "failed" ? planning.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-              {planning.error ? <Text style={s.danger}>{String(planning.error)}</Text> : null}
-              {startError ? <Text style={s.danger}>{startError}</Text> : null}
+              <Errors s={s} errors={[...(planning.data?.status === "failed" ? planning.data.errors : []), ...(planning.error ? [String(planning.error)] : []), ...(startError ? [startError] : [])]} />
             </View>
             <View style={s.row}>
               <Button s={s} secondary label={t("review.cancel")} onPress={close} />
@@ -458,7 +424,7 @@ type Applied = Extract<RpcOutput<typeof teamApplyRpc>, { ok: true }>;
 export const PROJECT_TEAMS_KEY = ["workspace-agents", "projects"] as const;
 
 export function TeamPanel({ workspaceId, ...props }: PluginWorkspacePanelProps) {
-  return <TeamEditor {...props} target={{ workspaceId }} />;
+  return <TeamEditor key={workspaceId} {...props} target={{ workspaceId }} />;
 }
 
 /** Propose, review and apply a team for the target's project. */
@@ -480,6 +446,8 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
   const teamEditProposal = useRpc(teamEditProposalRpc);
   const pendingProposal = useRpc(teamPendingProposalRpc);
   const cancelProposal = useRpc(teamProposalCancelRpc);
+  const cancelPlanner = useRpc(teamPlannerCancelRpc);
+  const stopPlanner = (agentId: string) => void cancelPlanner({ agentId }).catch(() => {});
 
   const current = useQuery({ queryKey: ["workspace-agents", "team", target], queryFn: () => read(target) });
   const [goal, setGoal] = useState("");
@@ -500,50 +468,39 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [confirmUnshare, setConfirmUnshare] = useState(false);
   const [picker, setPicker] = useState<SelectRequest | null>(null);
-  const [pickerQuery, setPickerQuery] = useState("");
-  const [highlight, setHighlight] = useState(0);
-  const pickerRef = useRef<SelectRequest | null>(null);
-  pickerRef.current = picker;
-  const listRef = useRef<ScrollView>(null);
-  const rowLayouts = useRef<Record<number, { y: number; height: number }>>({});
-  const listHeight = useRef(0);
-  const scrollY = useRef(0);
-  const openSelect = (request: SelectRequest) => {
-    setPickerQuery("");
-    const index = request.options.indexOf(request.value);
-    setHighlight(index >= 0 ? index : 0);
-    rowLayouts.current = {};
-    scrollY.current = 0;
-    setPicker(request);
-  };
+  const scrollRef = useRef<ScrollView>(null);
+  const showMessages = () => scrollRef.current?.scrollToEnd({ animated: true });
 
   // The planner keeps running when this screen closes; reopening it picks the newest proposal back up.
   // Fetched fresh on every open (gcTime 0) and only once the team is read, since a proposal is fitted to it.
   const pendingKey = ["workspace-agents", "pending-proposal", target];
-  const pending = useQuery({ queryKey: pendingKey, queryFn: () => pendingProposal(target), enabled: current.data !== undefined, gcTime: 0 });
-  useEffect(() => {
-    const agentId = pending.data?.agentId;
-    if (agentId) setPlannerId((id) => id ?? agentId);
-  }, [pending.data]);
+  const pending = useQuery({ queryKey: pendingKey, queryFn: () => pendingProposal(target), enabled: current.data !== undefined && !current.data.team, gcTime: 0 });
   const cancelled = useMutation({ mutationFn: () => cancelProposal(target), onSuccess: () => queryClient.setQueryData(pendingKey, { agentId: null }) });
 
   const planning = useQuery({
     queryKey: ["workspace-agents", "proposal", plannerId],
     queryFn: () => proposal({ agentId: plannerId! }),
     enabled: plannerId !== null,
-    refetchInterval: (query) => (query.state.data?.status === "running" || !query.state.data ? 2000 : false),
+    refetchInterval: (query) => proposalPollInterval(query.state),
+    ...SETTLED_ONCE,
   });
   // From a workspace, the team's orchestrator always runs in that workspace.
   const here = current.data?.workspace ?? null;
   const atHere = (team: Team): Team => (here === null ? team : { ...team, orchestrator: { ...team.orchestrator, workspace: here } });
-  // A new draft creates new workspaces instead of landing in the project's existing ones.
-  const titles = current.data?.projectWorkspaces ?? [];
+  // A new draft creates new workspaces instead of landing in the project's existing ones or in another team's missing one.
+  const titles = [...(current.data?.projectWorkspaces ?? []), ...(current.data?.takenWorkspaces ?? [])];
   const fresh = (team: Team): Team => withFreeWorkspaces(atHere(team), titles, { orchestrator: here === null });
+  // Each proposal becomes the draft once; a later refetch of the same answer must not wipe the user's edits.
+  const draftedProposalId = useRef<string | null>(null);
   useEffect(() => {
-    if (planning.data?.status === "done") { resetEditHistory(); cancelTeamEdit(); setDraft(fresh(planning.data.team)); }
-  }, [planning.data]);
+    if (planning.data?.status !== "done" || !plannerId || draftedProposalId.current === plannerId) return;
+    draftedProposalId.current = plannerId;
+    resetEditHistory();
+    cancelTeamEdit();
+    setDraft(fresh(planning.data.team));
+  }, [planning.data, plannerId]);
 
-  // Keep AI edits separate from the draft until accepted; cancellation ignores late start responses.
+  // Keep AI edits separate from the draft until accepted; cancellation archives the editor, also one whose start answers late.
   const [editRequest, setEditRequest] = useState("");
   const [editPlannerId, setEditPlannerId] = useState<string | null>(null);
   const [editStarting, setEditStarting] = useState(false);
@@ -553,18 +510,28 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
     editRequestCounter.current += 1;
     setEditStarting(false);
     setEditStartError(null);
+    if (editPlannerId) stopPlanner(editPlannerId);
     setEditPlannerId(null);
     setEditNotice(null);
   };
+  // Unmounting (workspace switch, back to projects, sidebar badge) never reaches cancelTeamEdit, so the editor is archived here.
+  const unmount = useRef(() => {});
+  unmount.current = () => {
+    editRequestCounter.current += 1;
+    if (editPlannerId) stopPlanner(editPlannerId);
+  };
+  useEffect(() => () => unmount.current(), []);
   const editPlanning = useQuery({
     queryKey: ["workspace-agents", "team-edit-proposal", editPlannerId],
     queryFn: () => teamEditProposal({ agentId: editPlannerId! }),
     enabled: editPlannerId !== null,
-    refetchInterval: (query) => (query.state.data?.status === "running" || !query.state.data ? 2000 : false),
+    refetchInterval: (query) => proposalPollInterval(query.state),
+    ...SETTLED_ONCE,
   });
   const startTeamEdit = useMutation({
     onMutate: () => {
       const request = ++editRequestCounter.current;
+      if (editPlannerId) stopPlanner(editPlannerId);
       setEditPlannerId(null);
       setEditNotice(null);
       setEditStarting(true);
@@ -574,7 +541,7 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
     mutationFn: (team: Team) =>
       proposeTeamEdit({ ...target, request: editRequest, team }),
     onSuccess: ({ agentId }, _team, context) => {
-      if (editRequestCounter.current !== context.request) return;
+      if (editRequestCounter.current !== context.request) return stopPlanner(agentId);
       setEditStarting(false);
       setEditPlannerId(agentId);
     },
@@ -584,7 +551,9 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
       setEditStartError(String(error));
     },
   });
-  const editBusy = editStarting || (editPlannerId !== null && (!editPlanning.data || editPlanning.data.status === "running"));
+  // A failed poll has stopped: the editor stays tracked (so Cancel can archive it) but is no longer waited on.
+  const editPhase = pollPhase(editPlannerId, editPlanning);
+  const editBusy = editStarting || editPhase !== "idle";
 
   useEffect(() => {
     const result = editPlanning.data;
@@ -599,14 +568,46 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
   }, [draft, editPlannerId, editPlanning.data]);
   const editSummary = editNotice?.summary;
 
-  const start = useMutation({ onMutate: () => { resetEditHistory(); cancelTeamEdit(); }, mutationFn: () => propose({ ...target, goal }), onSuccess: ({ agentId }) => setPlannerId(agentId) });
+  // A draft started by hand, or leaving the review, drops a proposal whose start is still in flight.
+  const startCounter = useRef(0);
+  const beginDraft = (team: Team) => {
+    startCounter.current += 1;
+    resetEditHistory();
+    cancelTeamEdit();
+    setDraft(team);
+  };
+  const closeReview = () => {
+    startCounter.current += 1;
+    draftedProposalId.current = null;
+    cancelTeamEdit();
+    resetEditHistory();
+    setEditRequest("");
+    setPicker(null);
+    setEditingRoleIndex(null);
+    setDraft(null);
+    setPlannerId(null);
+  };
+  const start = useMutation({
+    onMutate: () => {
+      resetEditHistory();
+      cancelTeamEdit();
+      return { request: ++startCounter.current };
+    },
+    mutationFn: () => propose({ ...target, goal }),
+    onSuccess: ({ agentId }, _input, context) => (startCounter.current === context.request ? setPlannerId(agentId) : stopPlanner(agentId)),
+  });
   const applied = useMutation({
+    onMutate: () => unshared.reset(),
     mutationFn: (team: Team) => apply({ ...target, team }),
     onSuccess: (result) => {
       void current.refetch();
       void queryClient.invalidateQueries({ queryKey: PROJECT_TEAMS_KEY });
       void queryClient.invalidateQueries({ queryKey: ["dashboard", "roster"] });
-      if (result.ok) onApplied?.(result);
+      if (!result.ok) return;
+      // Apply archived the planner; leave the review so the applied team's card shows instead of a second Apply.
+      queryClient.setQueryData(pendingKey, { agentId: null });
+      closeReview();
+      onApplied?.(result);
     },
   });
   const targetWorkspaceId = "workspaceId" in target ? target.workspaceId : null;
@@ -618,17 +619,30 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
   };
   // Share the project's team with this workspace: the file lists it, and the team's orchestrator starts here.
   const shared = useMutation({
+    onMutate: () => {
+      // Sharing gives this workspace a team, so a proposal whose start answers late is dropped.
+      startCounter.current += 1;
+      unshared.reset();
+    },
     mutationFn: (file: string) => share({ projectId: current.data!.project.id, file, workspaceId: targetWorkspaceId! }),
     onSuccess: (result) => {
       refreshTeams();
       if (result.ok) onApplied?.(result);
     },
   });
+  useEffect(() => {
+    // A leftover planner is picked up only while nothing is being drafted, started or shared; a start that then fails lets it in.
+    const agentId = pendingPickup(pending.data?.agentId, { hasTeam: Boolean(current.data?.team), drafting: draft !== null, starting: start.isPending, sharing: shared.isPending });
+    if (agentId) setPlannerId((id) => id ?? agentId);
+  }, [pending.data, start.isPending]);
   const unshared = useMutation({
     mutationFn: () => unshare({ projectId: current.data!.project.id, file: current.data!.file!, workspaceId: targetWorkspaceId! }),
     onSuccess: (result) => {
       if (!result.ok) return;
       setConfirmUnshare(false);
+      // The team left this workspace: an earlier Applied card would point at the orchestrator unshare just archived.
+      shared.reset();
+      applied.reset();
       refreshTeams();
     },
   });
@@ -653,61 +667,44 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
       roleRows.push(draft.roles.slice(i, i + columns).map((role, offset) => ({ role, index: i + offset })));
     }
   }
-  const pickerNeedle = pickerQuery.trim().toLowerCase();
-  const pickerOptions = picker ? (pickerNeedle ? picker.options.filter((option) => option.toLowerCase().includes(pickerNeedle)) : picker.options) : [];
-  const highlightedIndex = pickerOptions.length > 0 ? Math.min(highlight, pickerOptions.length - 1) : -1;
-  const pickOption = (option: string) => {
-    const active = pickerRef.current;
-    if (!active) return;
-    pickerRef.current = null;
-    setPicker(null);
-    setPickerQuery("");
-    active.onChange(option);
+  const teamPhase = pollPhase(plannerId, planning);
+  const cancelProposalPoll = () => {
+    cancelled.mutate();
+    setPlannerId(null);
   };
-  const pickHighlighted = () => {
-    if (highlightedIndex >= 0 && highlightedIndex < pickerOptions.length) {
-      pickOption(pickerOptions[highlightedIndex]!);
-    }
-  };
-  useEffect(() => {
-    if (!picker || highlightedIndex < 0) return;
-    const row = rowLayouts.current[highlightedIndex] ?? { y: highlightedIndex * 40, height: 36 };
-    const viewHeight = listHeight.current || 320;
-    const top = scrollY.current;
-    if (row.y < top) {
-      scrollY.current = row.y;
-      listRef.current?.scrollTo({ y: row.y, animated: false });
-    } else if (row.y + row.height > top + viewHeight) {
-      const nextY = row.y + row.height - viewHeight;
-      scrollY.current = nextY;
-      listRef.current?.scrollTo({ y: nextY, animated: false });
-    }
-  }, [highlightedIndex, picker, pickerQuery]);
-  const teamBusy = plannerId !== null && (!planning.data || planning.data.status === "running");
+  // `busy` is false once a poll has failed: the dialog then only shows the error and Cancel.
   const progress = applied.isPending
-    ? { status: t("result.applying"), error: null, onCancel: null }
+    ? { title: t("progress.title"), status: t("result.applying"), busy: true, error: null, onCancel: null }
     : editBusy
-      ? { status: t("review.editPlanning"), error: editPlanning.error ? String(editPlanning.error) : null, onCancel: cancelTeamEdit }
-      : teamBusy
-        ? {
-            status: t("create.planning"),
-            error: planning.error ? String(planning.error) : null,
-            onCancel: () => {
-              cancelled.mutate();
-              setPlannerId(null);
-            },
-          }
+      ? { title: t(editPhase === "errored" ? "review.editTeamWithAi" : "progress.title"), status: t("review.editPlanning"), busy: editPhase !== "errored", error: editPlanning.error ? String(editPlanning.error) : null, onCancel: cancelTeamEdit }
+      : teamPhase !== "idle"
+        ? { title: t(teamPhase === "errored" ? "create.propose" : "progress.title"), status: t("create.planning"), busy: teamPhase !== "errored", error: planning.error ? String(planning.error) : null, onCancel: cancelProposalPoll }
         : null;
 
   if (current.isLoading) return <View style={[s.screen, s.body]}><Text style={s.muted}>{t("loading")}</Text></View>;
   if (current.error) return <View style={[s.screen, s.body]}><Text style={s.danger}>{String(current.error)}</Text></View>;
   const data = current.data!;
+  // Apply and Share both end in a started orchestrator; show the newer one's outcome.
+  const outcome = latestResult(applied, shared);
+  const result = outcome?.ok ? outcome : null;
+  const cleanupLines = (result?.cleanup ?? []).map((failure) => t("result.cleanupFailed", { failure }));
+  // Advice that is not a failure, such as an orchestrator elsewhere that still runs on the old team.
+  const notices = noticesOf(result);
+  // What failed, per action, so a repeat of the same failure is announced and scrolled to again.
+  const failures = [
+    { from: cancelled, errors: cancelled.error ? [String(cancelled.error)] : [] },
+    { from: applied, errors: [...(applied.error ? [String(applied.error)] : []), ...(applied.data && !applied.data.ok ? applied.data.errors : [])] },
+    { from: restarted, errors: [...(restarted.error ? [String(restarted.error)] : []), ...(restarted.data && !restarted.data.ok ? restarted.data.errors : [])] },
+    // Unsharing closes its confirmation box, so what it could not archive or notify is reported here.
+    { from: unshared, errors: unshared.data?.ok ? unshared.data.failures : [] },
+  ];
+  const reserved = reservedByOtherTeam(data.workspace, data.team !== null, data.takenWorkspaces);
   // This workspace uses a team whose home is elsewhere: it can stop sharing instead of deleting.
   const sharedHere = Boolean(data.team && data.workspace !== null && !data.home && isSharedWith(data.team, data.workspace));
 
   return (
-    <ScrollView style={s.screen} contentContainerStyle={s.body}>
-      <Text style={s.title}>{t("title", { project: data.project.name })}</Text>
+    <ScrollView ref={scrollRef} style={s.screen} contentContainerStyle={s.body}>
+      <Text accessibilityRole="header" style={s.title}>{t("title", { project: data.project.name })}</Text>
       <Text style={s.muted}>{data.project.root}/{data.file ?? `${TEAMS_DIR}/`}</Text>
 
       {data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>)}
@@ -721,7 +718,7 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
             </Text>
           ) : null}
           <View style={[s.row, { justifyContent: "flex-end" }]}>
-            <Button s={s} label={t("current.edit")} onPress={() => { resetEditHistory(); cancelTeamEdit(); setDraft(data.team); }} />
+            <Button s={s} label={t("current.edit")} onPress={() => beginDraft(data.team!)} />
             <Button s={s} secondary label={t("current.reapply")} disabled={applied.isPending || restarted.isPending} onPress={() => applied.mutate(data.team!)} />
             <Button s={s} secondary label={t("current.restart")} disabled={applied.isPending || restarted.isPending} onPress={() => setConfirmRestart(true)} />
             {sharedHere ? <Button s={s} secondary label={t("current.unshare")} disabled={unshared.isPending} onPress={() => setConfirmUnshare(true)} /> : null}
@@ -733,9 +730,7 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                 <Button s={s} label={t("current.unshare")} disabled={unshared.isPending} onPress={() => unshared.mutate()} />
                 <Button s={s} secondary label={t("review.cancel")} disabled={unshared.isPending} onPress={() => setConfirmUnshare(false)} />
               </View>
-              {unshared.error ? <Text style={s.danger}>{String(unshared.error)}</Text> : null}
-              {unshared.data && !unshared.data.ok ? unshared.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-              {unshared.data?.ok && unshared.data.failures.length ? unshared.data.failures.map((failure) => <Text key={failure} style={s.danger}>{failure}</Text>) : null}
+              <Errors s={s} errors={[...(unshared.error ? [String(unshared.error)] : []), ...(unshared.data && !unshared.data.ok ? unshared.data.errors : [])]} />
             </View>
           ) : null}
           <CurrentTeamTree team={data.team} s={s} colors={theme.colors} compact={layout.compact} icons={providerIcons} />
@@ -745,19 +740,23 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
       ) : null}
 
       <Modal
-        title={t("progress.title")}
+        title={progress?.title ?? t("progress.title")}
         open={progress !== null}
         onOpenChange={(open) => {
           if (!open) progress?.onCancel?.();
         }}
       >
         <Modal.Content>
-          <View style={s.row}>
-            <ActivityIndicator color={theme.colors.accent} />
-            {progress ? <Text style={s.text}>{progress.status}</Text> : null}
-          </View>
-          <Text style={s.muted}>{t("progress.keepOpen")}</Text>
-          {progress?.error ? <Text style={s.danger}>{progress.error}</Text> : null}
+          <Notice tone="status" announce={progress?.busy ? progress.status : ""} style={s.row}>
+            {progress?.busy ? (
+              <>
+                <ActivityIndicator color={theme.colors.accent} />
+                <Text style={s.text}>{progress.status}</Text>
+              </>
+            ) : null}
+          </Notice>
+          {progress?.busy ? <Text style={s.muted}>{t("progress.keepOpen")}</Text> : null}
+          <Errors s={s} errors={progress?.error ? [progress.error] : []} />
           {progress?.onCancel ? (
             <View style={s.row}>
               <Button s={s} secondary label={t("review.cancel")} onPress={progress.onCancel} />
@@ -784,91 +783,7 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
         </Modal.Content>
       </Modal>
 
-      <Modal
-        title={picker?.label ?? ""}
-        open={picker !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            pickerRef.current = null;
-            setPicker(null);
-            setPickerQuery("");
-          }
-        }}
-      >
-        <Modal.Content>
-          {picker ? (
-            <>
-              <TextInput
-                style={s.input}
-                value={pickerQuery}
-                placeholder={t("role.searchPlaceholder")}
-                autoFocus
-                onChangeText={(text) => {
-                  rowLayouts.current = {};
-                  scrollY.current = 0;
-                  setPickerQuery(text);
-                  setHighlight(0);
-                }}
-                onKeyPress={(event) => {
-                  const key = event.nativeEvent.key;
-                  if (key === "ArrowDown") {
-                    event.preventDefault?.();
-                    if (pickerOptions.length > 0) {
-                      setHighlight((current) => Math.min(pickerOptions.length - 1, Math.min(current, pickerOptions.length - 1) + 1));
-                    }
-                  } else if (key === "ArrowUp") {
-                    event.preventDefault?.();
-                    if (pickerOptions.length > 0) {
-                      setHighlight((current) => Math.max(0, Math.min(current, pickerOptions.length - 1) - 1));
-                    }
-                  } else if (key === "Enter") {
-                    event.preventDefault?.();
-                    pickHighlighted();
-                  }
-                }}
-                onSubmitEditing={pickHighlighted}
-              />
-              <ScrollView
-                ref={listRef}
-                style={{ maxHeight: 320 }}
-                contentContainerStyle={{ gap: 4 }}
-                keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled
-                scrollEventThrottle={16}
-                onLayout={(event) => {
-                  listHeight.current = event.nativeEvent.layout.height;
-                }}
-                onScroll={(event) => {
-                  scrollY.current = event.nativeEvent.contentOffset.y;
-                }}
-              >
-                {pickerOptions.length === 0 ? <Text style={s.muted}>{t(picker.options.length === 0 ? "role.noOptions" : "role.noMatches")}</Text> : null}
-                {pickerOptions.map((option, index) => {
-                  const selected = option === picker.value;
-                  const focused = index === highlightedIndex;
-                  return (
-                    <Pressable
-                      key={option}
-                      accessibilityRole="button"
-                      accessibilityLabel={option}
-                      accessibilityState={{ selected }}
-                      onLayout={(event) => {
-                        const { y, height } = event.nativeEvent.layout;
-                        rowLayouts.current[index] = { y, height };
-                      }}
-                      onPress={() => pickOption(option)}
-                      style={selected ? (focused ? s.optionOnActive : s.optionOn) : focused ? s.optionActive : s.option}
-                    >
-                      <Text style={selected ? s.buttonText : s.text}>{option}</Text>
-                      {selected ? <Text style={s.buttonText}>✓</Text> : null}
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            </>
-          ) : null}
-        </Modal.Content>
-      </Modal>
+      <PickerModal s={s} request={picker} onClose={() => setPicker(null)} />
 
       <InstructionsDialog
         s={s}
@@ -884,16 +799,19 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
         onClose={() => setEditingRoleIndex(null)}
       />
 
-      {!draft ? !data.team && (
+      {!draft ? data.team ? null : reserved ? (
+        <Notice tone="status" style={s.card}>
+          <Text style={s.text}>{t("create.reservedByOtherTeam")}</Text>
+        </Notice>
+      ) : (
         <View style={s.card}>
           <Text style={s.text}>{t(here === null ? "create.intro" : "create.introHere")}</Text>
-          <TextInput style={s.input} value={goal} placeholder={t("create.goalPlaceholder")} onChangeText={setGoal} />
+          <Field label={t("create.goalPlaceholder")} labelHidden style={s.input} value={goal} placeholder={t("create.goalPlaceholder")} onChangeText={setGoal} />
           <View style={s.row}>
-            <Button s={s} label={t("create.propose")} disabled={!goal.trim() || start.isPending || planning.data?.status === "running"} onPress={() => start.mutate()} />
-            <Button s={s} secondary label={t("create.blank")} onPress={() => { resetEditHistory(); cancelTeamEdit(); setDraft(fresh({ version: 1, goal, orchestrator: { workspace: "orchestrator", provider: "claude", model: catalog.find((entry) => entry.id === "claude")?.models[0]?.id ?? "" }, roles: [newRole(catalog, [])] })); }} />
+            <Button s={s} label={t("create.propose")} disabled={!goal.trim() || start.isPending || shared.isPending || planning.data?.status === "running"} onPress={() => start.mutate()} />
+            <Button s={s} secondary label={t("create.blank")} disabled={shared.isPending} onPress={() => beginDraft(fresh({ version: 1, goal, orchestrator: { workspace: "orchestrator", ...blankOrchestratorModel(catalog) }, roles: [newRole(catalog, [])] }))} />
           </View>
-          {planning.data?.status === "failed" ? planning.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-          {start.error ? <Text style={s.danger}>{String(start.error)}</Text> : null}
+          <Errors s={s} errors={[...(planning.data?.status === "failed" ? planning.data.errors : []), ...(start.error ? [String(start.error)] : [])]} />
           {here !== null && data.projectTeams.length ? (
             <View style={{ marginTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 10, gap: 6 }}>
               <Text style={[s.text, { fontWeight: "600" }]}>{t("create.copyTitle")}</Text>
@@ -909,26 +827,27 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                       {entry.goal ? <Text style={s.muted} numberOfLines={2}>{entry.goal}</Text> : null}
                     </View>
                     <View style={s.row}>
-                      <Button s={s} secondary label={t("create.copy")} disabled={shared.isPending} onPress={() => { resetEditHistory(); cancelTeamEdit(); setDraft(fresh(copyTeamTo(entry.team, here))); }} />
-                      <Button s={s} secondary label={t("create.share")} disabled={shared.isPending || targetWorkspaceId === null} onPress={() => shared.mutate(entry.file)} />
+                      <Button s={s} secondary label={t("create.copy")} accessibilityLabel={t("create.copyNamed", { workspace: entry.workspace })} disabled={shared.isPending} onPress={() => beginDraft(fresh(copyTeamTo(entry.team, here)))} />
+                      <Button s={s} secondary label={t("create.share")} accessibilityLabel={t("create.shareNamed", { workspace: entry.workspace })} disabled={shared.isPending || start.isPending || targetWorkspaceId === null} onPress={() => shared.mutate(entry.file)} />
                     </View>
                   </View>
                 ))}
               </View>
-              {shared.isPending ? <View style={s.row}><ActivityIndicator color={theme.colors.accent} /><Text style={s.muted}>{t("result.applying")}</Text></View> : null}
-              {shared.error ? <Text style={s.danger}>{String(shared.error)}</Text> : null}
-              {shared.data && !shared.data.ok ? shared.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
+              <Notice tone="status" announce={shared.isPending ? t("result.applying") : ""} style={s.row}>
+                {shared.isPending ? <><ActivityIndicator color={theme.colors.accent} /><Text style={s.muted}>{t("result.applying")}</Text></> : null}
+              </Notice>
+              <Errors s={s} errors={[...(shared.error ? [String(shared.error)] : []), ...(shared.data && !shared.data.ok ? shared.data.errors : [])]} />
             </View>
           ) : null}
         </View>
       ) : (
-        <SelectContext.Provider value={openSelect}>
+        <SelectContext.Provider value={setPicker}>
           <View style={{ gap: 10 }}>
-            <Text style={s.title}>{t("review.title")}</Text>
+            <Text accessibilityRole="header" style={s.title}>{t("review.title")}</Text>
             <View style={[s.orchestratorCard, { padding: 8, gap: 4 }]}>
               <Text style={s.orchestratorLabel}>{t("review.orchestrator")}</Text>
               {here === null && !(data.team && data.sharedWorkspaces.length) ? (
-                <TextInput style={s.inputCompact} value={draft.orchestrator.workspace} placeholder={t("role.workspace")} onChangeText={(workspace) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, workspace } } : current))} />
+                <Field label={t("role.workspace")} labelHidden style={s.inputCompact} value={draft.orchestrator.workspace} placeholder={t("role.workspace")} onChangeText={(workspace) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, workspace } } : current))} />
               ) : here === null ? (
                 <Text style={s.muted}>{draft.orchestrator.workspace}</Text>
               ) : (
@@ -957,58 +876,64 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                 ))}
                 <Button s={s} compact secondary label={t("review.addRole")} onPress={() => setDraft((current) => (current ? { ...current, roles: [...current.roles, newRole(catalog, current.roles.map((role) => role.name))] } : current))} />
                 <View style={s.card}>
-                  <TextInput style={[s.inputCompact, { minHeight: 36 }]} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
+                  <Field label={t("review.teamEditRequest")} labelHidden style={[s.inputCompact, { minHeight: 36 }]} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
                   <View style={s.row}>
                     <Button s={s} compact secondary label={t("review.editTeamWithAi")} disabled={!editRequest.trim() || editBusy} onPress={() => startTeamEdit.mutate(draft)} />
                     <Button s={s} compact secondary label={t("review.undo")} disabled={!history.past.length || editBusy} onPress={() => { const result = undo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
                     <Button s={s} compact secondary label={t("review.redo")} disabled={!history.future.length || editBusy} onPress={() => { const result = redo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
                   </View>
-                  {editPlanning.data?.status === "failed" ? editPlanning.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-                  {editPlanning.error ? <Text style={s.danger}>{String(editPlanning.error)}</Text> : null}
-                  {editNotice && editSummary ? (
-                    <View style={s.card}>
+                  <Errors s={s} errors={[...(editPlanning.data?.status === "failed" ? editPlanning.data.errors : []), ...(editPlanning.error ? [String(editPlanning.error)] : []), ...(editStartError ? [editStartError] : [])]} />
+                  <Notice tone="status" announce={editNotice && editSummary ? t("review.editSummary") : ""} style={s.card}>
+                    {editNotice && editSummary ? (
+                    <>
                       <Text style={s.text}>{t("review.editSummary")}</Text>
                       {editSummary.added.map((name) => <Text key={`added-${name}`} style={s.text}>{t("review.editAdded", { name })}</Text>)}
                       {editSummary.removed.map((name) => <Text key={`removed-${name}`} style={s.text}>{t("review.editRemoved", { name })}</Text>)}
-                      {editSummary.changed.map(({ name, fields }) => <Text key={`changed-${name}`} style={s.text}>{t("review.editChanged", { name, fields: fields.map((field) => t(`role.${field}`)).join(", ") })}</Text>)}
+                      {editSummary.changed.map(({ name, fields }) => <Text key={`changed-${name}`} style={s.text}>{t("review.editChanged", { name, fields: fields.map((field) => t(field === "folders" ? "role.foldersName" : `role.${field}`)).join(", ") })}</Text>)}
                       {editSummary.orchestrator ? <Text style={s.text}>{t("review.editOrchestratorChanged")}</Text> : null}
                       {editSummary.orchestratorEffort ? <Text style={s.text}>{t("review.editOrchestratorEffortChanged")}</Text> : null}
                       {editSummary.goal ? <Text style={s.text}>{t("review.editGoalChanged")}</Text> : null}
                       {!editSummary.added.length && !editSummary.removed.length && !editSummary.changed.length && !editSummary.orchestrator && !editSummary.orchestratorEffort && !editSummary.goal ? <Text style={s.muted}>{t("review.editNoChanges")}</Text> : null}
                       {editNotice.validation.map((error) => <Text key={error.target + error.message} style={s.danger}>{error.target}: {error.message}</Text>)}
-
-                    </View>
-                  ) : null}
-                  {editStartError ? <Text style={s.danger}>{editStartError}</Text> : null}
+                    </>
+                    ) : null}
+                  </Notice>
                 </View>
               </View>
             </View>
-            {problems.map((problem) => <Text key={problem} style={s.danger}>{problem}</Text>)}
+            <Notice tone="status" style={{ gap: 4 }}>
+              {problems.map((problem) => <Text key={problem} style={s.danger}>{problem}</Text>)}
+            </Notice>
             <View style={s.row}>
               <Button s={s} compact label={t("review.apply")} disabled={problems.length > 0 || applied.isPending} onPress={() => applied.mutate(draft)} />
-              <Button s={s} compact secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); cancelTeamEdit(); resetEditHistory(); setEditRequest(""); setPicker(null); setEditingRoleIndex(null); setDraft(null); setPlannerId(null); }} />
+              <Button s={s} compact secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); closeReview(); }} />
             </View>
           </View>
         </SelectContext.Provider>
       )}
 
-      {cancelled.error ? <Text style={s.danger}>{String(cancelled.error)}</Text> : null}
-      {applied.error ? <Text style={s.danger}>{String(applied.error)}</Text> : null}
-      {applied.data && !applied.data.ok ? applied.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
+      <Errors s={s} onShown={showMessages} token={outcomeToken(failures.filter((entry) => entry.errors.length).map((entry) => entry.from))} errors={failures.flatMap((entry) => entry.errors)} />
+      <Notice
+        tone="status"
+        announce={restarted.isPending ? t("current.restarting") : result ? [t("result.applied", { file: result.file }), ...cleanupLines, ...notices].join(". ") : ""}
+        token={outcomeToken([applied, shared])}
+        onShown={showMessages}
+        style={{ gap: 12 }}
+      >
       {restarted.isPending ? <Text style={s.muted}>{t("current.restarting")}</Text> : null}
-      {restarted.error ? <Text style={s.danger}>{String(restarted.error)}</Text> : null}
-      {restarted.data && !restarted.data.ok ? restarted.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-      {applied.data?.ok ? (
+      {result ? (
         <View style={s.card}>
-          <Text style={s.success}>{t("result.applied", { file: applied.data.file })}</Text>
-          {applied.data.workspaces.map((workspace) => (
+          <Text style={s.success}>{t("result.applied", { file: result.file })}</Text>
+          {result.workspaces.map((workspace) => (
             <Text key={workspace.id} style={s.text}>• {t(workspace.created ? "result.created" : "result.reused", { target: workspace.target, workspace: workspace.workspace })}</Text>
           ))}
-          {(applied.data as Applied).permission ? <Text style={s.muted}>{t("result.permission", { file: (applied.data as Applied).permission! })}</Text> : null}
-          {(applied.data as Applied).cleanup.map((failure) => <Text key={failure} style={s.danger}>{t("result.cleanupFailed", { failure })}</Text>)}
-          {navigation ? <Button s={s} label={t("result.openOrchestrator")} onPress={() => navigation.openAgent({ agentId: (applied.data as { orchestratorAgentId: string }).orchestratorAgentId })} /> : null}
+          {result.permission ? <Text style={s.muted}>{t("result.permission", { file: result.permission })}</Text> : null}
+          {cleanupLines.map((line) => <Text key={line} style={s.danger}>{line}</Text>)}
+          {notices.map((line) => <Text key={line} style={s.text}>{line}</Text>)}
+          {navigation ? <Button s={s} label={t("result.openOrchestrator")} onPress={() => navigation.openAgent({ agentId: result.orchestratorAgentId })} /> : null}
         </View>
       ) : null}
+      </Notice>
     </ScrollView>
   );
 }

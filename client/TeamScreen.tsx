@@ -3,25 +3,44 @@ import type { PluginScreenProps, PluginSidebarItemProps } from "@getpaseo/plugin
 import { usePaseo, useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AccessibilityInfo, ActivityIndicator, Animated, Easing, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { ActivityIndicator, Animated, Easing, Platform, ScrollView, Text, View } from "react-native";
 import { withAlpha } from "../shared/color";
-import { activityCounts, awaitingResponseCount, filterForest, forestActivityCounts, type ActivityFilter, type AgentForest, type AgentNode } from "../shared/agent-tree";
+import { activityCounts, awaitingResponseCount, filterForest, forestActivityCounts, isHidden, type ActivityFilter, type AgentForest, type AgentNode } from "../shared/agent-tree";
 import { messages } from "./i18n";
 import { teamDeleteRpc, teamProjectsRpc, teamReconnectRpc, teamRestoreRpc } from "../shared/rpc";
 import { AgentDashboardView, ClosedControls, DEFAULT_STATE, DensityToggle, useAgentsRefresh, useDashboardAgents, useDashboardData, type DashboardState } from "./AgentDashboard";
-import { Button, PROJECT_TEAMS_KEY, styles, TeamEditor } from "./TeamPanel";
+import { PROJECT_TEAMS_KEY, TeamEditor } from "./TeamPanel";
+import { Button, Errors, Group, LinkButton, Notice, Prompt, RadioGroup, TabPanel, Tabs, useReduceMotion } from "./ui/controls";
+import { noticesOf } from "./panel-logic";
+import { closedIdsOf, reconnectChoices } from "./screen-logic";
+import { styles } from "./ui/styles";
 
 export const SCREEN_ID = "team";
 
 const ACTIVITY_FILTERS: readonly ActivityFilter[] = ["all", "working", "awaiting", "idle"];
 
-/** Every project and its teams, refetched when the host's projects change. */
+/** Every project and its teams, refetched when the host's projects or workspaces change. */
 function useProjectTeams() {
   const list = useRpc(teamProjectsRpc);
   const paseo = usePaseo();
   const queryClient = useQueryClient();
-  useEffect(() => paseo.projects.subscribe(() => void queryClient.invalidateQueries({ queryKey: PROJECT_TEAMS_KEY })), [paseo, queryClient]);
+  // Workspace events come in bursts (create, rename, archive), so they refetch at most once a second.
+  useEffect(() => {
+    const refetch = () => void queryClient.invalidateQueries({ queryKey: PROJECT_TEAMS_KEY });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refetchSoon = () => {
+      timer ??= setTimeout(() => {
+        timer = null;
+        refetch();
+      }, 1000);
+    };
+    const off = [paseo.projects.subscribe(refetch), paseo.workspaces.subscribe(refetchSoon)];
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      off.forEach((stop) => stop());
+    };
+  }, [paseo, queryClient]);
   return useQuery({ queryKey: PROJECT_TEAMS_KEY, queryFn: () => list({}) });
 }
 
@@ -32,17 +51,8 @@ function AwaitingBadge({ count, colors, label }: { count: number; colors: Sideba
   const pulse = useRef(new Animated.Value(0)).current;
   const bump = useRef(new Animated.Value(1)).current;
   const previous = useRef(0);
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const reduceMotion = useReduceMotion();
   const native = Platform.OS !== "web";
-  useEffect(() => {
-    let active = true;
-    void AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (active) setReduceMotion(value); }).catch(() => {});
-    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
-    return () => {
-      active = false;
-      subscription.remove();
-    };
-  }, []);
   const pulsing = count > 0 && !reduceMotion;
   useEffect(() => {
     if (!pulsing) return;
@@ -73,7 +83,7 @@ function AwaitingBadge({ count, colors, label }: { count: number; colors: Sideba
     };
   }, [count, reduceMotion, bump, native]);
   return (
-    <View accessibilityLabel={label}>
+    <View accessible role="img" accessibilityLabel={label}>
       {pulsing ? (
         <Animated.View
           pointerEvents="none"
@@ -118,6 +128,7 @@ export function TeamSidebarItem({ currentScreen, openScreen, theme }: PluginSide
 export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }: PluginScreenProps & { openTeamPanel?: (workspaceId: string) => void }) {
   const s = useMemo(() => styles(theme.colors, layout.compact), [theme, layout.compact]);
   const { t } = useTranslation(messages);
+  const tabsId = useId();
   const projects = useProjectTeams();
   const [listWidth, setListWidth] = useState(0);
   const columns = layout.compact || listWidth < 720 ? 1 : listWidth < 1120 ? 2 : 3;
@@ -134,14 +145,21 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(paramFilter ?? "all");
   // The sidebar badge opens this screen on the All agents tab with a filter, also when it is already open; `at` makes each press a new param set.
   useEffect(() => {
-    if (params?.tab === "agents") setTab("agents");
+    if (params?.tab === "agents") {
+      setTab("agents");
+      // Also leaves the New team view, which would otherwise keep covering the tab.
+      setProjectId(null);
+    }
     if (paramFilter) setActivityFilter(paramFilter);
   }, [params?.tab, params?.at, paramFilter]);
   const [forestByProject, setForestByProject] = useState<Record<string, AgentForest>>({});
+  // A section's view remounts when it changes column or leaves the filter, so what it would lose is kept here (agent ids are unique across projects).
+  const [expandedSubagents, setExpandedSubagents] = useState<Record<string, boolean>>({});
+  const [widthByProject, setWidthByProject] = useState<Record<string, number>>({});
   const agentSections = useMemo(() => (projects.data ?? []).flatMap((project) => {
     const ids = project.workspaces.map((workspace) => workspace.id);
     const scope = new Set(ids);
-    return allAgents.some((agent) => scope.has(agent.workspaceId ?? "") && (dashState.showClosed || !agent.archivedAt)) ? [{ project, ids }] : [];
+    return allAgents.some((agent) => scope.has(agent.workspaceId ?? "") && (dashState.showClosed || !isHidden(agent))) ? [{ project, ids }] : [];
   }), [projects.data, allAgents, dashState.showClosed]);
   const counts = forestActivityCounts(agentSections.flatMap(({ project }) => forestByProject[project.id] ?? []));
   // A section is shown unless its forest is known and has no tree matching the filter; hidden ones stay mounted so they keep reporting.
@@ -163,7 +181,7 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
     sectionColumns[lightest]!.push(section);
     sectionWeights[lightest]! += 3 + (filtered ? [...filtered.trees, ...filtered.solo].reduce((sum, node) => sum + countNodes(node), 0) : 0);
   }
-  const closedIds = useMemo(() => [...new Set(Object.values(closedByProject).flat())], [closedByProject]);
+  const closedIds = useMemo(() => closedIdsOf(agentSections.map(({ project }) => project.id), closedByProject), [agentSections, closedByProject]);
   const queryClient = useQueryClient();
   const remove = useRpc(teamDeleteRpc);
   const reconnect = useRpc(teamReconnectRpc);
@@ -202,14 +220,20 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
 
   const openApplied = (result: Extract<RpcOutput<typeof teamRestoreRpc>, { ok: true }>) => {
     if (result.cleanup.length) toast.error(t("result.cleanupFailed", { failure: result.cleanup.join("; ") }));
+    // Opening the workspace leaves this screen, so the advice is also shown where it stays visible.
+    if (navigation) noticesOf(result).forEach((line) => toast.show(line));
     navigation?.openWorkspace({ workspaceId: result.workspaces[0]!.id });
   };
+  // Advice from the last restore that is not a failure, such as an orchestrator elsewhere still running on the old team.
+  const [advice, setAdvice] = useState<string[]>([]);
   const restored = useMutation({
+    onMutate: () => setAdvice([]),
     mutationFn: (input: { projectId: string; file: string }) => restore(input),
     onSuccess: (result) => {
       if (!result.ok) return;
       setReconnecting(null);
       invalidateTeams();
+      setAdvice(noticesOf(result));
       openApplied(result);
     },
   });
@@ -222,6 +246,7 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
           <Button s={s} secondary label={t("screen.back")} onPress={() => setProjectId(null)} />
         </View>
         <TeamEditor
+          key={projectId}
           theme={theme}
           layout={layout}
           navigation={navigation}
@@ -233,16 +258,20 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
   }
 
   type ProjectEntry = NonNullable<typeof projects.data>[number];
-  const newTeamLink = (id: string) => (
-    <Pressable accessibilityRole="button" accessibilityLabel={t("screen.newTeam")} hitSlop={8} onPress={() => setProjectId(id)} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-      <Icon name="Plus" size={14} color={theme.colors.accent} />
-      <Text style={{ color: theme.colors.accent, fontSize: 12, fontWeight: "600" }}>{t("screen.newTeam")}</Text>
-    </Pressable>
+  const newTeamLink = (project: { id: string; name: string }) => (
+    <LinkButton
+      label={t("screen.newTeam")}
+      accessibilityLabel={t("screen.newTeamNamed", { project: project.name })}
+      color={theme.colors.accent}
+      bold
+      icon={<Icon name="Plus" size={14} color={theme.colors.accent} />}
+      onPress={() => setProjectId(project.id)}
+    />
   );
   const projectTitleBar = (project: { name: string; root: string }, action?: ReactNode) => (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: withAlpha(theme.colors.accent, 0.1), borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
       <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-        <Text style={[s.text, { fontSize: 15, fontWeight: "700" }]}>{project.name}</Text>
+        <Text accessibilityRole="header" style={[s.text, { fontSize: 15, fontWeight: "700" }]}>{project.name}</Text>
         <Text style={[s.muted, { flex: 1, minWidth: 0, fontSize: 11 }]} numberOfLines={1}>{project.root}</Text>
       </View>
       {action}
@@ -260,21 +289,14 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
     columnWeights[lightest]! += 2 + project.teams.length;
   }
   const renderProject = (project: ProjectEntry) => {
-    const titleKey = (title: string) => title.trim().toLowerCase();
-    const sharedTitles = new Set(project.teams.flatMap((team) => team.sharedWorkspaces).map(titleKey));
-    const occupiedWorkspaces = new Set([
-      ...project.teams.map((team) => team.workspaceId).filter((id) => id != null),
-      ...project.workspaces.filter((workspace) => sharedTitles.has(titleKey(workspace.title))).map((workspace) => workspace.id),
-    ]);
-    const reconnectWorkspaces = project.workspaces.filter((workspace) => !occupiedWorkspaces.has(workspace.id));
     return (
       <View key={project.id} style={[s.card, { minWidth: 0, padding: 0, gap: 0, overflow: "hidden" }]}>
-        {projectTitleBar(project, newTeamLink(project.id))}
-        {project.errors.map((error) => <Text key={error} style={[s.danger, { paddingHorizontal: 12, paddingTop: 10 }]}>{error}</Text>)}
+        {projectTitleBar(project, newTeamLink(project))}
+        <Errors s={s} errors={project.errors} style={{ paddingHorizontal: 12, paddingTop: 10 }} />
         {project.teams.map((team, index) => (
-          <View key={team.file} style={{ minWidth: 0, paddingHorizontal: 12, paddingVertical: 10, gap: 6, borderTopWidth: index > 0 ? 1 : 0, borderTopColor: theme.colors.border }}>
+          <Group key={team.file} label={team.orchestratorWorkspace} style={{ minWidth: 0, paddingHorizontal: 12, paddingVertical: 10, gap: 6, borderTopWidth: index > 0 ? 1 : 0, borderTopColor: theme.colors.border }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: team.workspaceId ? theme.colors.accent : theme.colors.statusWarning }} />
+              <View aria-hidden style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: team.workspaceId ? theme.colors.accent : theme.colors.statusWarning }} />
               <Text style={[s.text, { flex: 1, minWidth: 0, fontSize: 14, fontWeight: "700" }]}>{team.orchestratorWorkspace}</Text>
               <Text style={s.muted}>{t("screen.roles", { count: team.roles })}</Text>
             </View>
@@ -283,43 +305,59 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
             {!team.workspaceId ? <Text style={{ color: theme.colors.statusWarning, fontSize: 12 }}>{t("screen.workspaceMissing")}</Text> : null}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {team.workspaceId ? (
-                <Button s={s} secondary label={t("screen.openTeam")} onPress={() => openTeamPanel?.(team.workspaceId!)} />
+                <Button s={s} secondary label={t("screen.openTeam")} accessibilityLabel={t("screen.openTeamNamed", { workspace: team.orchestratorWorkspace })} onPress={() => openTeamPanel?.(team.workspaceId!)} />
               ) : (
-                <Button s={s} label={t("screen.reconnect")} disabled={reconnectBusy} onPress={() => { restored.reset(); setReconnecting(`${project.id}:${team.file}`); }} />
+                <Button s={s} label={t("screen.reconnect")} accessibilityLabel={t("screen.reconnectNamed", { workspace: team.orchestratorWorkspace })} disabled={reconnectBusy} onPress={() => { restored.reset(); setReconnecting(`${project.id}:${team.file}`); }} />
               )}
-              <Pressable accessibilityRole="button" accessibilityLabel={t("screen.deleteTeam")} disabled={deleted.isPending} hitSlop={8} onPress={() => setConfirming(`${project.id}:${team.file}`)} style={{ marginLeft: "auto", opacity: deleted.isPending ? 0.5 : 1 }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("screen.deleteTeam")}</Text>
-              </Pressable>
+              <LinkButton
+                label={t("screen.deleteTeam")}
+                accessibilityLabel={t("screen.deleteTeamNamed", { workspace: team.orchestratorWorkspace })}
+                color={theme.colors.foregroundMuted}
+                disabled={deleted.isPending}
+                onPress={() => setConfirming(`${project.id}:${team.file}`)}
+                style={{ marginLeft: "auto" }}
+              />
             </View>
-            {!team.workspaceId && reconnecting === `${project.id}:${team.file}` ? (
-              <View style={insetPanel}>
-                <Text style={s.text}>{t("screen.reconnectPick")}</Text>
-                {!reconnectWorkspaces.length ? <Text style={s.muted}>{t("screen.noWorkspaceToPick")}</Text> : null}
-                <View style={s.row}>
-                  {reconnectWorkspaces.map((workspace) => (
-                    <Button key={workspace.id} s={s} label={workspace.title} disabled={reconnectBusy} onPress={() => reconnected.mutate({ projectId: project.id, file: team.file, workspaceId: workspace.id })} />
-                  ))}
-                  <Button s={s} secondary label={t("screen.startNewWorkspace")} disabled={reconnectBusy} onPress={() => restored.mutate({ projectId: project.id, file: team.file })} />
-                  <Button s={s} secondary label={t("review.cancel")} disabled={reconnectBusy} onPress={() => setReconnecting(null)} />
-                </View>
-                {reconnectBusy ? <View style={s.row}><ActivityIndicator color={theme.colors.accent} /><Text style={s.muted}>{t(restored.isPending ? "result.applying" : "loading")}</Text></View> : null}
-                {restored.variables?.projectId === project.id && restored.variables.file === team.file ? <>
-                  {restored.error ? <Text style={s.danger}>{String(restored.error)}</Text> : null}
-                  {restored.data && !restored.data.ok ? restored.data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>) : null}
-                </> : null}
+            <Prompt
+              open={!team.workspaceId && reconnecting === `${project.id}:${team.file}`}
+              announce={t("screen.reconnectPick")}
+              style={insetPanel}
+              message={
+                <>
+                  <Text style={s.text}>{t("screen.reconnectPick")}</Text>
+                  {!reconnectChoices(project.workspaces, project.teams, team).length ? <Text style={s.muted}>{t("screen.noWorkspaceToPick")}</Text> : null}
+                </>
+              }
+            >
+              <View style={s.row}>
+                {reconnectChoices(project.workspaces, project.teams, team).map((workspace) => (
+                  <Button key={workspace.id} s={s} label={workspace.title} disabled={reconnectBusy} onPress={() => reconnected.mutate({ projectId: project.id, file: team.file, workspaceId: workspace.id })} />
+                ))}
+                <Button s={s} secondary label={t("screen.startNewWorkspace")} disabled={reconnectBusy} onPress={() => restored.mutate({ projectId: project.id, file: team.file })} />
+                <Button s={s} secondary label={t("review.cancel")} disabled={reconnectBusy} onPress={() => setReconnecting(null)} />
               </View>
-            ) : null}
-            {confirming === `${project.id}:${team.file}` ? (
-              <View style={insetPanel}>
-                <Text style={s.text}>{t("screen.deleteConfirm", { file: team.file })}</Text>
-                {team.sharedWorkspaces.length ? <Text style={s.text}>{t("screen.deleteShared", { workspaces: team.sharedWorkspaces.join(", ") })}</Text> : null}
-                <View style={s.row}>
-                  <Button s={s} label={t("screen.deleteYes")} disabled={deleted.isPending} onPress={() => deleted.mutate({ projectId: project.id, file: team.file })} />
-                  <Button s={s} secondary label={t("review.cancel")} disabled={deleted.isPending} onPress={() => setConfirming(null)} />
-                </View>
+              <Notice tone="status" announce={reconnectBusy ? t(restored.isPending ? "result.applying" : "loading") : ""} style={s.row}>
+                {reconnectBusy ? <><ActivityIndicator color={theme.colors.accent} /><Text style={s.muted}>{t(restored.isPending ? "result.applying" : "loading")}</Text></> : null}
+              </Notice>
+              <Errors s={s} errors={restored.variables?.projectId === project.id && restored.variables.file === team.file ? [...(restored.error ? [String(restored.error)] : []), ...(restored.data && !restored.data.ok ? restored.data.errors : [])] : []} />
+            </Prompt>
+            <Prompt
+              open={confirming === `${project.id}:${team.file}`}
+              announce={t("screen.deleteConfirm", { file: team.file })}
+              style={insetPanel}
+              message={
+                <>
+                  <Text style={s.text}>{t("screen.deleteConfirm", { file: team.file })}</Text>
+                  {team.sharedWorkspaces.length ? <Text style={s.text}>{t("screen.deleteShared", { workspaces: team.sharedWorkspaces.join(", ") })}</Text> : null}
+                </>
+              }
+            >
+              <View style={s.row}>
+                <Button s={s} label={t("screen.deleteYes")} disabled={deleted.isPending} onPress={() => deleted.mutate({ projectId: project.id, file: team.file })} />
+                <Button s={s} secondary label={t("review.cancel")} disabled={deleted.isPending} onPress={() => setConfirming(null)} />
               </View>
-            ) : null}
-          </View>
+            </Prompt>
+          </Group>
         ))}
       </View>
     );
@@ -340,48 +378,44 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
                       embedded
                       activityFilter={activityFilter}
                       reportForest={(forest) => setForestByProject((current) => current[project.id] === forest ? current : { ...current, [project.id]: forest })}
+                      expandedSubagents={expandedSubagents}
+                      setExpandedSubagents={setExpandedSubagents}
+                      width={widthByProject[project.id] ?? 0}
+                      onWidth={(width) => setWidthByProject((current) => current[project.id] === width ? current : { ...current, [project.id]: width })}
                       reportClosed={(closed) => setClosedByProject((current) => current[project.id]?.join("\n") === closed.join("\n") ? current : { ...current, [project.id]: closed })}
                     />
                   </View>
   );
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.body}>
-      <Text style={[s.title, { fontSize: 20, fontWeight: "700" }]}>{t("screen.title")}</Text>
-      <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
-        {(["teams", "agents"] as const).map((id) => (
-          <Pressable
-            key={id}
-            accessibilityRole="button"
-            accessibilityState={{ selected: tab === id }}
-            onPress={() => setTab(id)}
-            style={{ paddingHorizontal: 4, paddingVertical: 8, marginRight: 16, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: tab === id ? theme.colors.accent : "transparent" }}
-          >
-            <Text style={{ color: tab === id ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: tab === id ? "600" : "400" }}>
-              {id === "teams" ? t("screen.tabTeams") : t("screen.allAgents", { count: agentTotal })}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      <Text accessibilityRole="header" style={[s.title, { fontSize: 20, fontWeight: "700" }]}>{t("screen.title")}</Text>
+      <Tabs
+        id={tabsId}
+        label={t("screen.tabsLabel")}
+        colors={theme.colors}
+        value={tab}
+        onChange={setTab}
+        items={[
+          { value: "teams", label: t("screen.tabTeams") },
+          { value: "agents", label: t("screen.allAgents", { count: agentTotal }) },
+        ]}
+      />
       {projects.isLoading ? <Text style={s.muted}>{t("loading")}</Text> : null}
-      {projects.error ? <Text style={s.danger}>{String(projects.error)}</Text> : null}
+      <Errors s={s} errors={projects.error ? [String(projects.error)] : []} />
+      <Notice tone="status" announce={advice.join(". ")} token={restored.submittedAt} style={{ gap: 4 }}>
+        {advice.map((line) => <Text key={line} style={s.text}>{line}</Text>)}
+      </Notice>
       {tab === "agents" ? (
-        <>
+        <TabPanel id={tabsId} value="agents" style={{ gap: 12 }}>
           <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-            <View style={[s.row, { gap: 8 }]}>
-              {(["all", "working", "awaiting", "idle"] as const).map((id) => (
-                <Pressable
-                  key={id}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: activityFilter === id }}
-                  onPress={() => setActivityFilter(id)}
-                  style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: activityFilter === id ? theme.colors.accent : theme.colors.surface1, borderWidth: 1, borderColor: activityFilter === id ? theme.colors.accent : theme.colors.border }}
-                >
-                  <Text style={{ color: activityFilter === id ? theme.colors.accentForeground : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>
-                    {t(id === "all" ? "screen.filterAll" : `screen.${id}`, { count: counts[id] })}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+            <RadioGroup
+              variant="pill"
+              label={t("screen.filterLabel")}
+              colors={theme.colors}
+              value={activityFilter}
+              onChange={setActivityFilter}
+              items={ACTIVITY_FILTERS.map((id) => ({ value: id, label: t(id === "all" ? "screen.filterAll" : `screen.${id}`, { count: counts[id] }) }))}
+            />
             <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", gap: 12 }}>
               <DensityToggle colors={theme.colors} state={dashState} setState={setDashState} />
               <View style={{ marginTop: -12 }}>
@@ -389,7 +423,9 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
               </View>
             </View>
           </View>
-          {agentSections.length > 0 && shownSections.length === 0 ? <Text style={s.muted}>{t("screen.noMatchingAgents")}</Text> : null}
+          <Notice tone="status">
+            {agentSections.length > 0 && shownSections.length === 0 && agentSections.every(({ project }) => forestByProject[project.id]) ? <Text style={s.muted}>{t("screen.noMatchingAgents")}</Text> : null}
+          </Notice>
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }} onLayout={(event) => {
             const width = Math.round(event.nativeEvent.layout.width);
             setListWidth((current) => current === width ? current : width);
@@ -401,9 +437,9 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
             ))}
           </View>
           {hiddenSections.length ? <View style={{ display: "none" }}>{hiddenSections.map(renderSection)}</View> : null}
-        </>
+        </TabPanel>
       ) : null}
-      {tab === "teams" ? <>
+      {tab === "teams" ? <TabPanel id={tabsId} value="teams" style={{ gap: 12 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }} onLayout={(event) => {
         const width = Math.round(event.nativeEvent.layout.width);
         setListWidth((current) => current === width ? current : width);
@@ -424,12 +460,12 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
             <View key={project.id} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
               <Text style={[s.text, { fontSize: 13, fontWeight: "600" }]}>{project.name}</Text>
               <Text style={[s.muted, { flex: 1, minWidth: 0 }]} numberOfLines={1}>{project.root}</Text>
-              {newTeamLink(project.id)}
+              {newTeamLink(project)}
             </View>
           ))}
         </View>
       ) : null}
-      </> : null}
+      </TabPanel> : null}
     </ScrollView>
   );
 }

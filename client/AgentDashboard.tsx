@@ -2,9 +2,8 @@ import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc, useTabState, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, Loading } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
-  AccessibilityInfo,
   Animated,
   Easing,
   Platform,
@@ -14,7 +13,6 @@ import {
   View,
 } from "react-native";
 import { z } from "zod";
-import { withAlpha } from "../shared/color";
 import { buildAgentForest, canArchive, canDismiss, dismissibleIds, filterForest, type ActivityFilter, type AgentForest, titleParts, type AgentNode } from "../shared/agent-tree";
 import {
   DASHBOARD_DENSITIES,
@@ -31,7 +29,9 @@ import {
   subagentsFromTimeline,
   type ProviderSubagent,
 } from "../shared/subagents";
+import { agentKind, agentMeta, agentStatusKey } from "./agent-label";
 import { messages } from "./i18n";
+import { RadioGroup, Switch, useReduceMotion } from "./ui/controls";
 
 const RED = "#ff5a5f";
 const GLOW = "#ff9a9d";
@@ -59,10 +59,14 @@ type TreeProps = {
   open?: (id: string) => void;
   caption: (node: AgentNode) => string;
   waitingLabel: string;
-  hideLabel: string;
+  /** The card's full accessible name: title, kind, status and model. */
+  agentLabel: (node: AgentNode) => string;
+  hideLabel: (node: AgentNode) => string;
   openParentLabel: string;
+  /** Reduced motion: no packets, flashes or glow pulse. */
+  still: boolean;
   dismiss?: (id: string) => void;
-  archive: { label: string; errorLabel: string; pending: boolean; errorId: string | null; run: (id: string) => void };
+  archive: { label: string; labelFor: (node: AgentNode) => string; errorLabel: string; pending: boolean; errorId: string | null; run: (id: string) => void };
   subagentLabel: (count: number) => string;
   expandedSubagents: Record<string, boolean>;
   toggleSubagents: (id: string) => void;
@@ -98,6 +102,8 @@ function Logo({
         backgroundColor: colors.surface2,
         alignItems: "center",
         justifyContent: "center",
+        // A role with no session yet: the logo dims, the text keeps its contrast.
+        opacity: node.waiting ? 0.45 : 1,
       }}
     >
       {icon.kind === "svg" ? (
@@ -131,6 +137,7 @@ function Badge({
   if (node.waiting)
     return (
       <Text
+        aria-hidden
         style={{
           color: colors.foregroundMuted,
           fontSize: layout.captionFontSize,
@@ -146,6 +153,7 @@ function Badge({
     const dotSize = layout.showChips ? 8 : layout.autoWidth ? 6 : 7;
     return (
       <Animated.View
+        aria-hidden
         style={{
           width: dotSize,
           height: dotSize,
@@ -164,6 +172,7 @@ function Badge({
   const badgeLineHeight = layout.showChips ? 14 : layout.autoWidth ? 11 : 12;
   return (
     <View
+      aria-hidden
       style={{
         width: badgeSize,
         height: badgeSize,
@@ -198,16 +207,7 @@ function DashboardTooltip({ tip, colors, measured, onHidden }: { tip: TooltipDat
   const ready = tip.tipWidth > 0;
   const opacity = useRef(new Animated.Value(0)).current;
   const shownKey = useRef<string | null>(null);
-  const [reduceMotion, setReduceMotion] = useState(false);
-  useEffect(() => {
-    let active = true;
-    void AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (active) setReduceMotion(value); }).catch(() => {});
-    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
-    return () => {
-      active = false;
-      subscription.remove();
-    };
-  }, []);
+  const reduceMotion = useReduceMotion();
   // Fade in once measured (from 0 for a new card), fade out on hide and then drop the tooltip; a new show stops a running fade-out.
   useEffect(() => {
     if (tip.shown) {
@@ -319,21 +319,31 @@ function Card(
     tipTimer.current = null;
     tooltips?.hide(tipKey);
   };
-  const showTipSoon = () => {
+  const pressedAt = useRef(0);
+  const showTip = (delay: number) => {
     if (Platform.OS !== "web" || !tooltips || tipTimer.current !== null) return;
     tipTimer.current = setTimeout(() => {
       tipTimer.current = null;
       cardRef.current?.measureInWindow((x, y, width, height) => {
-        tooltips?.show({ key: tipKey, name: title.name, id: title.id, meta: [node.model, node.effort, node.mode].filter(Boolean).join(" · "), x, y, width, height, rootWidth: 0, rootHeight: 0, tipWidth: 0, tipHeight: 0, shown: true });
+        tooltips?.show({ key: tipKey, name: title.name, id: title.id, meta: agentMeta(node), x, y, width, height, rootWidth: 0, rootHeight: 0, tipWidth: 0, tipHeight: 0, shown: true });
       });
-    }, 1000);
+    }, delay);
+  };
+  const showTipSoon = () => showTip(1000);
+  // Keyboard focus shows it at once; focus that comes from a press is about to open the agent, so it doesn't.
+  const showTipOnFocus = () => {
+    if (Date.now() - pressedAt.current > 500) showTip(0);
+  };
+  const startPress = () => {
+    pressedAt.current = Date.now();
+    hideTip();
   };
   useEffect(() => () => {
     if (tipTimer.current !== null) clearTimeout(tipTimer.current);
     tooltips?.hide(tipKey);
   }, [tooltips, tipKey]);
   const subagentPill =
-    !collapsed && subagentCount > 0 && onToggleSubagents ? (
+    subagentCount > 0 && onToggleSubagents ? (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={subagentCountLabel}
@@ -363,7 +373,7 @@ function Card(
 
   const briefLabel = node.role || node.title;
   const title = titleParts(node.title);
-  const titleContent = (fontSize: number) => <>{title.name}{title.id !== null ? <Text style={{ color: withAlpha(colors.foregroundMuted, 0.55), fontSize: Math.round(fontSize * 0.85) }}>{" " + title.id}</Text> : null}</>;
+  const titleContent = (fontSize: number) => <>{title.name}{title.id !== null ? <Text style={{ color: colors.foregroundMuted, fontSize: Math.round(fontSize * 0.85) }}>{" " + title.id}</Text> : null}</>;
   const briefBadgeSpace = node.waiting
     ? 42
     : node.badge === "running"
@@ -669,8 +679,7 @@ function Card(
         ? 3
         : layout.gap,
     borderWidth: 1,
-    borderStyle:
-      !layout.showChips && node.waiting ? ("dashed" as const) : undefined,
+    borderStyle: node.waiting ? ("dashed" as const) : undefined,
     borderColor: node.live
       ? RED
       : node.delegating
@@ -679,22 +688,25 @@ function Card(
           ? colors.accent
           : colors.border,
     borderRadius: layout.borderRadius,
-    backgroundColor: colors.surface1,
+    // A role with no session yet sits back (dashed, no fill, dimmed logo) while its text keeps full contrast.
+    backgroundColor: node.waiting ? colors.surface0 : colors.surface1,
     shadowColor: RED,
     shadowOpacity: node.live ? layout.glowOpacity : 0,
     shadowRadius: layout.glowRadius,
     shadowOffset: { width: 0, height: 0 },
-    // A role with no session yet: dimmed, and nothing to open.
-    opacity: node.waiting ? 0.45 : node.kind === "subagent" ? 0.85 : 1,
   };
+  // Hide and Archive sit beside the card, not inside it: a button within a button is skipped by screen readers.
   const hideButton = props.dismiss && canDismiss(node) ? (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={props.hideLabel}
-      onPress={(event) => { event.stopPropagation(); props.dismiss?.(node.agent.id); }}
-      style={{ position: "absolute", top: -7, left: -7, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border }}
+      accessibilityLabel={props.hideLabel(node)}
+      hitSlop={8}
+      onPress={() => props.dismiss?.(node.agent.id)}
+      style={{ position: "absolute", top: -11, left: -11, width: 24, height: 24, alignItems: "center", justifyContent: "center" }}
     >
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 14 }}>×</Text>
+      <View style={{ width: 16, height: 16, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border }}>
+        <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 14 }}>×</Text>
+      </View>
     </Pressable>
   ) : null;
   const archiving = props.archive;
@@ -702,42 +714,51 @@ function Card(
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={archiving.label}
+        accessibilityLabel={archiving.labelFor(node)}
+        accessibilityState={{ disabled: archiving.pending }}
         disabled={archiving.pending}
-        onPress={(event) => { event.stopPropagation(); archiving.run(node.agent.id); }}
+        hitSlop={8}
+        onPress={() => archiving.run(node.agent.id)}
         style={{ position: "absolute", bottom: -8, right: 6, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, backgroundColor: colors.surface1, opacity: archiving.pending ? 0.5 : 1 }}
       >
         <Text style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 13, textDecorationLine: "underline" }}>{archiving.label}</Text>
       </Pressable>
       {archiving.errorId === node.agent.id ? (
-        <Text numberOfLines={1} style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, color: colors.statusDanger, fontSize: 11 }}>{archiving.errorLabel}</Text>
+        <Text role="alert" numberOfLines={1} style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, color: colors.statusDanger, fontSize: 11 }}>{archiving.errorLabel}</Text>
       ) : null}
     </>
   ) : null;
-  const card =
+  const label = props.agentLabel(node);
+  const cardBody =
     open && !node.waiting ? (
       <Pressable
         ref={cardRef}
         accessibilityRole="button"
-        accessibilityLabel={node.title}
+        accessibilityLabel={label}
         accessibilityHint={node.kind === "subagent" ? props.openParentLabel : undefined}
+        accessibilityState={{ busy: node.live }}
         onHoverIn={showTipSoon}
         onHoverOut={hideTip}
-        onPressIn={hideTip}
+        onFocus={showTipOnFocus}
+        onBlur={hideTip}
+        onPressIn={startPress}
         onPress={() => open(owningAgentId(node))}
         style={style}
       >
         {content}
-        {hideButton}
-        {archiveButton}
       </Pressable>
     ) : (
-      <Pressable ref={cardRef} accessibilityLabel={node.title} focusable={false} onHoverIn={showTipSoon} onHoverOut={hideTip} onPressIn={hideTip} style={style}>
+      <Pressable ref={cardRef} role="group" accessibilityLabel={label} accessibilityState={{ busy: node.live }} focusable={false} onHoverIn={showTipSoon} onHoverOut={hideTip} onPressIn={startPress} style={style}>
         {content}
-        {hideButton}
-        {archiveButton}
       </Pressable>
     );
+  const card = hideButton || archiveButton ? (
+    <View>
+      {cardBody}
+      {hideButton}
+      {archiveButton}
+    </View>
+  ) : cardBody;
   if (!node.live) {
     return subagentPill ? (
       <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
@@ -749,13 +770,14 @@ function Card(
     );
   }
   const peak = (layout.arrival + 1) / 2;
+  const motion = props.still ? undefined : phase;
   const ping =
-    phase?.interpolate({
+    motion?.interpolate({
       inputRange: [0, layout.arrival, peak, 1],
       outputRange: [1, 1, layout.arrivalFlash.scale, 1],
     }) ?? 1;
   const flash =
-    phase?.interpolate({
+    motion?.interpolate({
       inputRange: [0, layout.arrival, peak, 1],
       outputRange: [0, 0, layout.arrivalFlash.opacity, 0],
     }) ?? 0;
@@ -998,6 +1020,7 @@ function Connector({
   children,
   centers,
   phases,
+  still,
 }: {
   colors: Colors;
   flow: Animated.Value;
@@ -1006,6 +1029,7 @@ function Connector({
   children: AgentNode[];
   centers: Record<string, number>;
   phases: Record<string, Animated.AnimatedModulo<number>>;
+  still: boolean;
 }) {
   const { stem, branch } = layout;
   const positioned = children.filter(
@@ -1129,7 +1153,7 @@ function Connector({
         </View>
       )}
       {positioned
-        .filter((child) => child.live)
+        .filter((child) => child.live && !still)
         .map((child) => (
           <CommandPacket
             key={child.agent.id}
@@ -1240,6 +1264,7 @@ function Tree(props: TreeProps & { root?: boolean; collapseRoot?: boolean }) {
             children={visibleChildren}
             centers={centers}
             phases={phases}
+            still={props.still}
           />
           {visibleChildren.map((child) => (
             <View
@@ -1357,49 +1382,6 @@ export function useDashboardData(showClosed: boolean) {
   const glow = useRef(new Animated.Value(0)).current;
   const packet = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    const animation = Animated.loop(
-      Animated.timing(packet, {
-        toValue: 1,
-        duration: 1600,
-        easing: Easing.linear,
-        useNativeDriver: Platform.OS !== "web",
-      }),
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [packet]);
-  useEffect(() => {
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(glow, {
-          toValue: 1,
-          duration: 700,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(glow, {
-          toValue: 0,
-          duration: 700,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [glow]);
-  useEffect(() => {
-    const animation = Animated.loop(
-      Animated.timing(flow, {
-        toValue: 1,
-        duration: 900,
-        useNativeDriver: Platform.OS !== "web",
-      }),
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [flow]);
-  useEffect(() => {
     const timers = new Set<ReturnType<typeof setTimeout>>();
     const coalesce = (fn: () => void) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1458,6 +1440,34 @@ export function useDashboardData(showClosed: boolean) {
   }, [paseo, client]);
   useAgentsRefresh();
   const agents = useDashboardAgents(showClosed);
+  // The loops run only while something is running and motion is allowed; otherwise the values rest (running dot fully lit, no glow pulse).
+  const reduceMotion = useReduceMotion();
+  const anyLive = (agents.data?.entries ?? []).some((entry) => entry.agent.status === "running") || Object.values(live).some((subagent) => subagent.status === "running");
+  const animate = anyLive && !reduceMotion;
+  useEffect(() => {
+    if (!animate) {
+      packet.setValue(0);
+      glow.setValue(0);
+      flow.setValue(0.5);
+      return;
+    }
+    const web = Platform.OS === "web";
+    const loops = [
+      Animated.loop(Animated.timing(packet, { toValue: 1, duration: 1600, easing: Easing.linear, useNativeDriver: !web })),
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(glow, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          Animated.timing(glow, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        ]),
+      ),
+      Animated.loop(Animated.timing(flow, { toValue: 1, duration: 900, useNativeDriver: !web })),
+    ];
+    packet.setValue(0);
+    glow.setValue(0);
+    flow.setValue(0);
+    loops.forEach((loop) => loop.start());
+    return () => loops.forEach((loop) => loop.stop());
+  }, [animate, packet, glow, flow]);
   const workspaces = useQuery({
     queryKey: ["dashboard", "workspaces"],
     queryFn: () => paseo.workspaces.list(),
@@ -1485,7 +1495,7 @@ export function useDashboardData(showClosed: boolean) {
       ),
     [providers.data],
   );
-  return { paseo, agents, workspaces, archived, live, flow, glow, packet, defaultEfforts, icons };
+  return { paseo, agents, workspaces, archived, live, flow, glow, packet, defaultEfforts, icons, reduceMotion };
 }
 
 export type DashboardData = ReturnType<typeof useDashboardData>;
@@ -1494,51 +1504,14 @@ export type DashboardData = ReturnType<typeof useDashboardData>;
 export function DensityToggle({ colors, state, setState }: { colors: Colors; state: DashboardState; setState: (next: DashboardState) => void }) {
   const { t } = useTranslation(messages);
   return (
-    <View
-      accessibilityLabel={t("density.label")}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        backgroundColor: colors.surface1,
-        borderRadius: 7,
-        borderWidth: 1,
-        borderColor: colors.border,
-        padding: 2,
-        gap: 2,
-      }}
-    >
-      {DASHBOARD_DENSITIES.map((option) => {
-        const selected = state.density === option;
-        const label = t(`density.${option}`);
-        return (
-          <Pressable
-            key={option}
-            accessibilityRole="button"
-            accessibilityLabel={`${t("density.label")}: ${label}`}
-            accessibilityState={{ selected }}
-            onPress={() => setState({ ...state, density: option })}
-            style={{
-              paddingHorizontal: 8,
-              paddingVertical: 3,
-              borderRadius: 5,
-              backgroundColor: selected ? colors.accent : "transparent",
-            }}
-          >
-            <Text
-              style={{
-                color: selected
-                  ? colors.accentForeground
-                  : colors.foregroundMuted,
-                fontSize: 11,
-                fontWeight: selected ? "700" : "500",
-              }}
-            >
-              {label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
+    <RadioGroup
+      variant="segment"
+      label={t("density.label")}
+      colors={colors}
+      value={state.density}
+      onChange={(density) => setState({ ...state, density })}
+      items={DASHBOARD_DENSITIES.map((option) => ({ value: option, label: t(`density.${option}`) }))}
+    />
   );
 }
 
@@ -1557,48 +1530,16 @@ export function ClosedControls({ colors, state, setState, closedIds, pad }: { co
           gap: 12,
         }}
       >
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: state.showClosed }}
-            onPress={() => setState({ ...state, showClosed: !state.showClosed })}
-            style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-          >
-            <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-              {t("showClosed")}
-            </Text>
-            <View
-              style={{
-                width: 32,
-                height: 18,
-                borderRadius: 9,
-                backgroundColor: state.showClosed
-                  ? colors.accent
-                  : colors.surface2,
-                justifyContent: "center",
-                paddingHorizontal: 2,
-              }}
-            >
-              <View
-                style={{
-                  width: 14,
-                  height: 14,
-                  borderRadius: 7,
-                  backgroundColor: state.showClosed
-                    ? colors.accentForeground
-                    : colors.foregroundMuted,
-                  alignSelf: state.showClosed ? "flex-end" : "flex-start",
-                }}
-              />
-            </View>
-          </Pressable>
+          <Switch label={t("showClosed")} value={state.showClosed} onChange={(showClosed) => setState({ ...state, showClosed })} colors={colors} />
           {state.showClosed && state.dismissed.length > 0 ? (
-            <Pressable accessibilityRole="button" onPress={() => setState({ ...state, dismissed: [] })} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("restoreHidden", { count: state.dismissed.length })} onPress={() => setState({ ...state, dismissed: [] })} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
               <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{t("restoreHidden", { count: state.dismissed.length })}</Text>
             </Pressable>
           ) : null}
           {state.showClosed && closedIds.length > 0 ? (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={t("hideAllClosed", { count: closedIds.length })}
               onPress={() => setState({ ...state, dismissed: [...new Set([...state.dismissed, ...closedIds])] })}
               style={{ paddingHorizontal: 8, paddingVertical: 4 }}
             >
@@ -1625,9 +1566,17 @@ export function AgentDashboardView(props: {
   /** Only trees with an agent of this activity are shown; the unfiltered forest is reported through reportForest. */
   activityFilter?: ActivityFilter;
   reportForest?: (forest: AgentForest) => void;
+  /**
+   * Which agents show their sub-agents, and the measured width, held by a parent that moves this view between containers
+   * (which remounts it) so neither is lost. Left out, the view keeps its own.
+   */
+  expandedSubagents?: Record<string, boolean>;
+  setExpandedSubagents?: Dispatch<SetStateAction<Record<string, boolean>>>;
+  width?: number;
+  onWidth?: (width: number) => void;
 }) {
   const { data, workspaceIds, state, setState, colors } = props;
-  const { paseo, agents, workspaces, archived, live, flow, glow, packet, defaultEfforts, icons } = data;
+  const { paseo, agents, workspaces, archived, live, flow, glow, packet, defaultEfforts, icons, reduceMotion } = data;
   const { t } = useTranslation(messages);
   const readRoster = useRpc(teamRosterRpc);
   const roster = useQuery({
@@ -1690,10 +1639,16 @@ export function AgentDashboardView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closedKey]);
   const pad = props.compact || props.embedded ? 16 : 24;
-  const [panelWidth, setPanelWidth] = useState(0);
-  const [expandedSubagents, setExpandedSubagents] = useState<
-    Record<string, boolean>
-  >({});
+  const [ownWidth, setOwnWidth] = useState(0);
+  const panelWidth = props.width ?? ownWidth;
+  // A hidden container lays out at width 0; that is not a measurement worth keeping over the last real one.
+  const setPanelWidth = (width: number) => {
+    setOwnWidth(width);
+    if (width > 0) props.onWidth?.(width);
+  };
+  const [ownExpanded, setOwnExpanded] = useState<Record<string, boolean>>({});
+  const expandedSubagents = props.expandedSubagents ?? ownExpanded;
+  const setExpandedSubagents = props.setExpandedSubagents ?? setOwnExpanded;
   const toggleSubagents = (id: string) =>
     setExpandedSubagents((current) => ({ ...current, [id]: !current[id] }));
   const layout = useMemo(() => densityLayout(state.density), [state.density]);
@@ -1737,10 +1692,22 @@ export function AgentDashboardView(props: {
               : t("subagent")
             : node.agent.provider),
     waitingLabel: t("waiting"),
-    hideLabel: t("hideAgent"),
+    agentLabel: (node: AgentNode) => {
+      const kind = agentKind(node);
+      const parts = {
+        title: node.title,
+        kind: "provider" in kind ? kind.provider : kind.key === "kindRole" ? t("kindRole", { role: kind.role }) : t(kind.key),
+        status: t(agentStatusKey(node)),
+      };
+      const model = agentMeta(node);
+      return model ? t("agentLabelWithModel", { ...parts, model }) : t("agentLabel", parts);
+    },
+    hideLabel: (node: AgentNode) => t("hideAgentNamed", { agent: node.title }),
     openParentLabel: t("openParentAgent"),
+    still: reduceMotion,
     archive: {
       label: t("archiveAgent"),
+      labelFor: (node: AgentNode) => t("archiveAgentNamed", { agent: node.title }),
       errorLabel: t("archiveFailed"),
       pending: archived.isPending,
       errorId: archived.isError ? archived.variables ?? null : null,
@@ -1756,7 +1723,7 @@ export function AgentDashboardView(props: {
           {agents.isLoading || workspaces.isLoading ? (
             <Loading />
           ) : agents.error || workspaces.error ? (
-            <Text style={{ color: colors.statusDanger }}>
+            <Text role="alert" style={{ color: colors.statusDanger }}>
               {t("dashboardError")}
             </Text>
           ) : !forest.trees.length && !forest.solo.length ? (
@@ -1796,6 +1763,7 @@ export function AgentDashboardView(props: {
                   }}
                 >
                   <Text
+                    accessibilityRole="header"
                     style={{
                       color: colors.foregroundMuted,
                       fontSize: 11,
@@ -1909,6 +1877,7 @@ export function AgentDashboard(props: PluginWorkspacePanelProps) {
         }}
       >
         <Text
+          accessibilityRole="header"
           style={{ color: colors.foreground, fontSize: 18, fontWeight: "700" }}
         >
           {t("dashboardTitle")}
