@@ -31,7 +31,7 @@ import {
 } from "../shared/subagents";
 import { agentKind, agentMeta, agentStatusKey } from "./agent-label";
 import { messages } from "./i18n";
-import { RadioGroup, Switch, useReduceMotion } from "./ui/controls";
+import { RadioGroup, Switch, useFocusRing, useReduceMotion } from "./ui/controls";
 
 const RED = "#ff5a5f";
 const GLOW = "#ff9a9d";
@@ -330,6 +330,7 @@ function Card(
     }, delay);
   };
   const showTipSoon = () => showTip(1000);
+  const focus = useFocusRing(colors);
   // Keyboard focus shows it at once; focus that comes from a press is about to open the agent, so it doesn't.
   const showTipOnFocus = () => {
     if (Date.now() - pressedAt.current > 500) showTip(0);
@@ -347,7 +348,7 @@ function Card(
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={subagentCountLabel}
-        accessibilityState={{ expanded: subagentsExpanded }}
+        aria-expanded={subagentsExpanded}
         onPress={onToggleSubagents}
         style={{
           backgroundColor: subagentsExpanded ? colors.accent : colors.surface2,
@@ -715,7 +716,7 @@ function Card(
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={archiving.labelFor(node)}
-        accessibilityState={{ disabled: archiving.pending }}
+        aria-disabled={archiving.pending}
         disabled={archiving.pending}
         hitSlop={8}
         onPress={() => archiving.run(node.agent.id)}
@@ -736,19 +737,28 @@ function Card(
         accessibilityRole="button"
         accessibilityLabel={label}
         accessibilityHint={node.kind === "subagent" ? props.openParentLabel : undefined}
-        accessibilityState={{ busy: node.live }}
+        aria-busy={node.live}
         onHoverIn={showTipSoon}
         onHoverOut={hideTip}
-        onFocus={showTipOnFocus}
-        onBlur={hideTip}
-        onPressIn={startPress}
+        onFocus={() => {
+          focus.handlers.onFocus();
+          showTipOnFocus();
+        }}
+        onBlur={() => {
+          focus.handlers.onBlur();
+          hideTip();
+        }}
+        onPressIn={() => {
+          focus.handlers.onPressIn();
+          startPress();
+        }}
         onPress={() => open(owningAgentId(node))}
-        style={style}
+        style={[style, focus.ring]}
       >
         {content}
       </Pressable>
     ) : (
-      <Pressable ref={cardRef} role="group" accessibilityLabel={label} accessibilityState={{ busy: node.live }} focusable={false} onHoverIn={showTipSoon} onHoverOut={hideTip} onPressIn={startPress} style={style}>
+      <Pressable ref={cardRef} role="group" accessibilityLabel={label} aria-busy={node.live} focusable={false} tabIndex={-1} onHoverIn={showTipSoon} onHoverOut={hideTip} onPressIn={startPress} style={style}>
         {content}
       </Pressable>
     );
@@ -1456,8 +1466,8 @@ export function useDashboardData(showClosed: boolean) {
       Animated.loop(Animated.timing(packet, { toValue: 1, duration: 1600, easing: Easing.linear, useNativeDriver: !web })),
       Animated.loop(
         Animated.sequence([
-          Animated.timing(glow, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-          Animated.timing(glow, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          Animated.timing(glow, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: !web }),
+          Animated.timing(glow, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: !web }),
         ]),
       ),
       Animated.loop(Animated.timing(flow, { toValue: 1, duration: 900, useNativeDriver: !web })),
@@ -1516,7 +1526,7 @@ export function DensityToggle({ colors, state, setState }: { colors: Colors; sta
 }
 
 /** The Show closed switch with Hide closed / Restore hidden, shared by the workspace panel and the Agent teams screen. */
-export function ClosedControls({ colors, state, setState, closedIds, pad }: { colors: Colors; state: DashboardState; setState: (next: DashboardState) => void; closedIds: string[]; pad: number }) {
+export function ClosedControls({ colors, state, setState, closedIds }: { colors: Colors; state: DashboardState; setState: (next: DashboardState) => void; closedIds: string[] }) {
   const { t } = useTranslation(messages);
   return (
       <View
@@ -1525,8 +1535,6 @@ export function ClosedControls({ colors, state, setState, closedIds, pad }: { co
           flexWrap: "wrap",
           justifyContent: "flex-end",
           alignItems: "center",
-          paddingHorizontal: pad,
-          paddingTop: 12,
           gap: 12,
         }}
       >
@@ -1850,7 +1858,6 @@ export function AgentDashboard(props: PluginWorkspacePanelProps) {
   const [state, setState] = useTabState(props.tab, stateSchema, DEFAULT_STATE);
   const data = useDashboardData(state.showClosed);
   const colors = props.theme.colors;
-  const pad = props.layout.compact ? 16 : 24;
   const workspaceIds = useMemo(() => {
     const entries = data.workspaces.data?.entries ?? [];
     const projectId = entries.find(
@@ -1866,7 +1873,7 @@ export function AgentDashboard(props: PluginWorkspacePanelProps) {
       <View
         style={{
           paddingHorizontal: props.layout.compact ? 16 : 24,
-          paddingVertical: 16,
+          paddingVertical: 12,
           borderBottomWidth: 1,
           borderColor: colors.border,
           flexDirection: "row",
@@ -1878,7 +1885,7 @@ export function AgentDashboard(props: PluginWorkspacePanelProps) {
       >
         <Text
           accessibilityRole="header"
-          style={{ color: colors.foreground, fontSize: 18, fontWeight: "700" }}
+          style={{ color: colors.foreground, fontSize: 16, fontWeight: "600" }}
         >
           {t("dashboardTitle")}
         </Text>
@@ -1895,9 +1902,9 @@ export function AgentDashboard(props: PluginWorkspacePanelProps) {
           }}
         >
           <DensityToggle colors={colors} state={state} setState={setState} />
+          <ClosedControls colors={colors} state={state} setState={setState} closedIds={closedIds} />
         </View>
       </View>
-      <ClosedControls colors={colors} state={state} setState={setState} closedIds={closedIds} pad={pad} />
       <AgentDashboardView
         data={data}
         workspaceIds={workspaceIds}

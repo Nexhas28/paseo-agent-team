@@ -7,7 +7,8 @@ import { Notice, webAria } from "./controls";
 import { highlightTarget, matchOptions, scrollToReveal } from "./logic";
 import type { Styles } from "./styles";
 
-export type SelectRequest = { label: string; options: readonly string[]; value: string; onChange(value: string): void };
+/** `restoreFocus` puts focus back on the control that opened the picker once it closes. */
+export type SelectRequest = { label: string; options: readonly string[]; value: string; onChange(value: string): void; restoreFocus?(): void };
 
 /**
  * A searchable single-select list in a modal (APG Combobox with a listbox popup).
@@ -47,6 +48,7 @@ export function PickerModal({ s, request, onClose }: { s: Styles; request: Selec
     active.current = null;
     onClose();
     current.onChange(option);
+    current.restoreFocus?.();
   };
   const pickHighlighted = () => {
     if (highlighted >= 0) pick(options[highlighted]!);
@@ -67,8 +69,10 @@ export function PickerModal({ s, request, onClose }: { s: Styles; request: Selec
       open={request !== null}
       onOpenChange={(open) => {
         if (open) return;
+        const current = active.current;
         active.current = null;
         onClose();
+        current?.restoreFocus?.();
       }}
     >
       <Modal.Content>
@@ -122,7 +126,7 @@ export function PickerModal({ s, request, onClose }: { s: Styles; request: Selec
                 scrollY.current = event.nativeEvent.contentOffset.y;
               }}
             >
-              <View id={listId} aria-label={request.label} {...webAria({ role: "listbox" })} style={{ gap: 4 }}>
+              <View id={listId} aria-label={request.label} {...webAria({ role: "listbox" })} style={{ gap: 2 }}>
                 {options.map((option, index) => {
                   const selected = option === request.value;
                   const focused = index === highlighted;
@@ -140,7 +144,7 @@ export function PickerModal({ s, request, onClose }: { s: Styles; request: Selec
                       onPress={() => pick(option)}
                       style={selected ? (focused ? s.optionOnActive : s.optionOn) : focused ? s.optionActive : s.option}
                     >
-                      <Text style={selected ? s.buttonText : s.text}>{option}</Text>
+                      <Text style={selected ? s.buttonText : s.text} numberOfLines={1}>{option}</Text>
                       {selected ? <Text aria-hidden style={s.buttonText}>✓</Text> : null}
                     </Pressable>
                   );

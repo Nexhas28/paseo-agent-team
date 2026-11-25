@@ -34,18 +34,65 @@ function focusRing(colors: Colors, focused: boolean): ViewStyle | null {
   return focused ? { outlineColor: colors.accent, outlineWidth: 2, outlineStyle: "solid", outlineOffset: 2 } : null;
 }
 
-export function Button({ s, label, accessibilityLabel, onPress, disabled, secondary, compact }: { s: Styles; label: string; accessibilityLabel?: string; onPress(): void; disabled?: boolean; secondary?: boolean; compact?: boolean }) {
+/** Focus and a press this close together are one pointer gesture, whichever of the two is reported first. */
+const PRESS_FOCUS_MS = 500;
+
+/** Whether focus came from the keyboard, told from React Native press and focus events alone: a press beside the focus means the pointer. */
+function useKeyboardFocus<Target>(): { focused: Target | null; onPressIn(): void; onFocus(target: Target): void; onBlur(target: Target): void } {
+  const [focused, setFocused] = useState<Target | null>(null);
+  const pressedAt = useRef(0);
+  const focusedAt = useRef(0);
+  return {
+    focused,
+    onPressIn: () => {
+      pressedAt.current = Date.now();
+      // The web focuses on pointer down, before the press is reported: take the ring back.
+      if (Date.now() - focusedAt.current < PRESS_FOCUS_MS) setFocused(null);
+    },
+    onFocus: (target) => {
+      focusedAt.current = Date.now();
+      setFocused(Date.now() - pressedAt.current > PRESS_FOCUS_MS ? target : null);
+    },
+    onBlur: (target) => {
+      focusedAt.current = 0;
+      setFocused((current) => (current === target ? null : current));
+    },
+  };
+}
+
+/** A visible ring while the control has keyboard focus. Spread `handlers` on the Pressable and add `ring` to its style. */
+export function useFocusRing(colors: Colors): { ring: ViewStyle | null; handlers: { onPressIn(): void; onFocus(): void; onBlur(): void } } {
+  const focus = useKeyboardFocus<true>();
+  return { ring: focusRing(colors, focus.focused === true), handlers: { onPressIn: focus.onPressIn, onFocus: () => focus.onFocus(true), onBlur: () => focus.onBlur(true) } };
+}
+
+/**
+ * One button for every action. Primary (filled) for the one main action of a view, `secondary` (outlined) for the rest,
+ * `danger` for the confirming step of something destructive; `compact` inside cards and rows.
+ */
+export function Button({ s, label, accessibilityLabel, onPress, disabled, secondary, danger, compact, icon }: { s: Styles; label: string; accessibilityLabel?: string; onPress(): void; disabled?: boolean; secondary?: boolean; danger?: boolean; compact?: boolean; icon?: ReactNode }) {
+  const focus = useFocusRing(s.colors);
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ disabled: Boolean(disabled) }} disabled={disabled} onPress={onPress} style={[secondary ? s.secondary : s.button, compact ? { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5 } : null, disabled ? { opacity: 0.5 } : null]}>
-      <Text style={[secondary ? s.text : s.buttonText, compact ? { fontSize: 12 } : null]}>{label}</Text>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      aria-disabled={Boolean(disabled)}
+      disabled={disabled}
+      onPress={onPress}
+      {...focus.handlers}
+      style={({ pressed }) => [danger ? s.dangerButton : secondary ? s.secondary : s.button, compact ? s.buttonCompact : null, pressed ? { opacity: 0.8 } : null, disabled ? s.disabled : null, focus.ring]}
+    >
+      {icon}
+      <Text style={[danger ? s.dangerButtonText : secondary ? s.secondaryText : s.buttonText, compact ? { fontSize: 12 } : null]}>{label}</Text>
     </Pressable>
   );
 }
 
 /** A text-only button, for quiet actions beside a row. */
-export function LinkButton({ label, accessibilityLabel, color, onPress, disabled, icon, bold, style }: { label: string; accessibilityLabel?: string; color: string; onPress(): void; disabled?: boolean; icon?: ReactNode; bold?: boolean; style?: StyleProp<ViewStyle> }) {
+export function LinkButton({ label, accessibilityLabel, color, colors, onPress, disabled, icon, bold, style }: { label: string; accessibilityLabel?: string; color: string; colors: Colors; onPress(): void; disabled?: boolean; icon?: ReactNode; bold?: boolean; style?: StyleProp<ViewStyle> }) {
+  const focus = useFocusRing(colors);
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ disabled: Boolean(disabled) }} disabled={disabled} hitSlop={8} onPress={onPress} style={[{ flexDirection: "row", alignItems: "center", gap: 4, opacity: disabled ? 0.5 : 1 }, style]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} aria-disabled={Boolean(disabled)} disabled={disabled} hitSlop={8} onPress={onPress} {...focus.handlers} style={[{ flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 4, opacity: disabled ? 0.5 : 1 }, style, focus.ring]}>
       {icon}
       <Text style={{ color, fontSize: 12, fontWeight: bold ? "600" : "400" }}>{label}</Text>
     </Pressable>
@@ -57,18 +104,19 @@ type Choice<Value extends string> = { value: Value; label: string; accessibility
 /** One tab stop for a row of items on the web; arrows, Home and End move focus and call `onMove`, so selection follows focus. Native keeps a stop per item. */
 function useRoving(count: number, selected: number, onMove: (index: number) => void) {
   const refs = useRef<(View | null)[]>([]);
-  const [focused, setFocused] = useState<number | null>(null);
+  const focus = useKeyboardFocus<number>();
   const stop = tabStop(selected, count);
   const web = Platform.OS === "web";
   return {
-    focused,
+    focused: focus.focused,
     item: (index: number) => ({
       ref: (element: View | null) => {
         refs.current[index] = element;
       },
       ...(web ? { tabIndex: rovingTabIndex(index, stop, web) } : {}),
-      onFocus: () => setFocused(index),
-      onBlur: () => setFocused((current) => (current === index ? null : current)),
+      onPressIn: focus.onPressIn,
+      onFocus: () => focus.onFocus(index),
+      onBlur: () => focus.onBlur(index),
       ...onKeyDown((event) => {
         const next = rovingTarget(event.key, index, count, { rtl: I18nManager.isRTL });
         if (next === null) return;
@@ -97,12 +145,12 @@ export function Tabs<Value extends string>({ id, label, items, value, onChange, 
             id={tabId(id, item.value)}
             accessibilityRole="tab"
             accessibilityLabel={item.accessibilityLabel ?? item.label}
-            accessibilityState={{ selected }}
+            aria-selected={selected}
             onPress={() => onChange(item.value)}
             {...roving.item(index)}
-            style={[{ paddingHorizontal: 4, paddingVertical: 8, marginRight: 16, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? colors.accent : "transparent" }, focusRing(colors, roving.focused === index)]}
+            style={[{ paddingHorizontal: 2, paddingVertical: 8, marginRight: 20, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? colors.accent : "transparent", borderTopLeftRadius: 4, borderTopRightRadius: 4 }, focusRing(colors, roving.focused === index)]}
           >
-            <Text style={{ color: selected ? colors.foreground : colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "600" : "400" }}>{item.label}</Text>
+            <Text style={{ color: selected ? colors.foreground : colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "600" : "500" }}>{item.label}</Text>
           </Pressable>
         );
       })}
@@ -133,17 +181,17 @@ export function RadioGroup<Value extends string>({ label, items, value, onChange
             key={item.value}
             accessibilityRole="radio"
             accessibilityLabel={item.accessibilityLabel ?? item.label}
-            accessibilityState={{ checked }}
+            aria-checked={checked}
             onPress={() => onChange(item.value)}
             {...roving.item(index)}
             style={[
               pill
-                ? { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: checked ? colors.accent : colors.surface1, borderWidth: 1, borderColor: checked ? colors.accent : colors.border }
-                : { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, backgroundColor: checked ? colors.accent : "transparent" },
+                ? { minHeight: 28, justifyContent: "center", paddingHorizontal: 12, borderRadius: 14, backgroundColor: checked ? colors.accent : colors.surface1, borderWidth: 1, borderColor: checked ? colors.accent : colors.border }
+                : { minHeight: 22, justifyContent: "center", paddingHorizontal: 8, borderRadius: 5, backgroundColor: checked ? colors.accent : "transparent" },
               focusRing(colors, roving.focused === index),
             ]}
           >
-            <Text style={{ color: checked ? colors.accentForeground : colors.foregroundMuted, fontSize: pill ? 12 : 11, fontWeight: pill ? "600" : checked ? "700" : "500" }}>{item.label}</Text>
+            <Text style={{ color: checked ? colors.accentForeground : colors.foregroundMuted, fontSize: 12, fontWeight: checked ? "600" : "500" }}>{item.label}</Text>
           </Pressable>
         );
       })}
@@ -152,10 +200,11 @@ export function RadioGroup<Value extends string>({ label, items, value, onChange
 }
 
 export function Switch({ label, value, onChange, colors }: { label: string; value: boolean; onChange(value: boolean): void; colors: Colors }) {
+  const focus = useFocusRing(colors);
   return (
-    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: value }} onPress={() => onChange(!value)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{label}</Text>
-      <View style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: value ? colors.accent : colors.surface2, justifyContent: "center", paddingHorizontal: 2 }}>
+    <Pressable accessibilityRole="switch" accessibilityLabel={label} aria-checked={value} onPress={() => onChange(!value)} {...focus.handlers} style={[{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28, borderRadius: 6 }, focus.ring]}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "500" }}>{label}</Text>
+      <View style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: value ? colors.accent : colors.surface2, borderWidth: 1, borderColor: value ? colors.accent : colors.border, justifyContent: "center", paddingHorizontal: 1 }}>
         <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: value ? colors.accentForeground : colors.foregroundMuted, alignSelf: value ? "flex-end" : "flex-start" }} />
       </View>
     </Pressable>

@@ -243,7 +243,7 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
     return (
       <View style={s.screen}>
         <View style={[s.row, { padding: layout.compact ? 12 : 20, paddingBottom: 0 }]}>
-          <Button s={s} secondary label={t("screen.back")} onPress={() => setProjectId(null)} />
+          <Button s={s} compact secondary icon={<Icon name="ArrowLeft" size={14} color={theme.colors.foreground} />} label={t("screen.back")} onPress={() => setProjectId(null)} />
         </View>
         <TeamEditor
           key={projectId}
@@ -263,21 +263,22 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
       label={t("screen.newTeam")}
       accessibilityLabel={t("screen.newTeamNamed", { project: project.name })}
       color={theme.colors.accent}
+      colors={theme.colors}
       bold
       icon={<Icon name="Plus" size={14} color={theme.colors.accent} />}
       onPress={() => setProjectId(project.id)}
     />
   );
   const projectTitleBar = (project: { name: string; root: string }, action?: ReactNode) => (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: withAlpha(theme.colors.accent, 0.1), borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 40, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: withAlpha(theme.colors.accent, 0.08), borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
       <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-        <Text accessibilityRole="header" style={[s.text, { fontSize: 15, fontWeight: "700" }]}>{project.name}</Text>
+        <Text accessibilityRole="header" style={[s.itemTitle, { flexShrink: 0, maxWidth: "70%" }]} numberOfLines={1}>{project.name}</Text>
         <Text style={[s.muted, { flex: 1, minWidth: 0, fontSize: 11 }]} numberOfLines={1}>{project.root}</Text>
       </View>
       {action}
     </View>
   );
-  const insetPanel = { width: "100%" as const, backgroundColor: theme.colors.surface2, borderRadius: 6, padding: 10, gap: 6 };
+  const insetPanel = [s.inset, { width: "100%" as const }];
   // Projects without a team or error leave the grid; the rest fill the columns, each into the lightest one.
   const emptyProjects = (projects.data ?? []).filter((project) => !project.teams.length && !project.errors.length);
   const teamColumns: ProjectEntry[][] = Array.from({ length: columns }, () => []);
@@ -292,27 +293,28 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
     return (
       <View key={project.id} style={[s.card, { minWidth: 0, padding: 0, gap: 0, overflow: "hidden" }]}>
         {projectTitleBar(project, newTeamLink(project))}
-        <Errors s={s} errors={project.errors} style={{ paddingHorizontal: 12, paddingTop: 10 }} />
+        <Errors s={s} errors={project.errors} style={{ paddingHorizontal: 14, paddingTop: 10 }} />
         {project.teams.map((team, index) => (
-          <Group key={team.file} label={team.orchestratorWorkspace} style={{ minWidth: 0, paddingHorizontal: 12, paddingVertical: 10, gap: 6, borderTopWidth: index > 0 ? 1 : 0, borderTopColor: theme.colors.border }}>
+          <Group key={team.file} label={team.orchestratorWorkspace} style={{ minWidth: 0, paddingHorizontal: 14, paddingVertical: 12, gap: 8, borderTopWidth: index > 0 ? 1 : 0, borderTopColor: theme.colors.border }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View aria-hidden style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: team.workspaceId ? theme.colors.accent : theme.colors.statusWarning }} />
-              <Text style={[s.text, { flex: 1, minWidth: 0, fontSize: 14, fontWeight: "700" }]}>{team.orchestratorWorkspace}</Text>
-              <Text style={s.muted}>{t("screen.roles", { count: team.roles })}</Text>
+              <View aria-hidden style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: team.workspaceId ? theme.colors.statusSuccess : theme.colors.statusWarning }} />
+              <Text style={[s.itemTitle, { flex: 1, minWidth: 0 }]} numberOfLines={1}>{team.orchestratorWorkspace}</Text>
+              <View style={s.chip}><Text style={s.muted}>{t("screen.roles", { count: team.roles })}</Text></View>
             </View>
             {team.goal ? <Text style={s.muted} numberOfLines={2}>{team.goal}</Text> : null}
             {team.sharedWorkspaces.length ? <Text style={s.muted}>{t("screen.sharedWith", { workspaces: team.sharedWorkspaces.join(", ") })}</Text> : null}
-            {!team.workspaceId ? <Text style={{ color: theme.colors.statusWarning, fontSize: 12 }}>{t("screen.workspaceMissing")}</Text> : null}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            {!team.workspaceId ? <Text style={s.warning}>{t("screen.workspaceMissing")}</Text> : null}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               {team.workspaceId ? (
-                <Button s={s} secondary label={t("screen.openTeam")} accessibilityLabel={t("screen.openTeamNamed", { workspace: team.orchestratorWorkspace })} onPress={() => openTeamPanel?.(team.workspaceId!)} />
+                <Button s={s} compact secondary label={t("screen.openTeam")} accessibilityLabel={t("screen.openTeamNamed", { workspace: team.orchestratorWorkspace })} onPress={() => openTeamPanel?.(team.workspaceId!)} />
               ) : (
-                <Button s={s} label={t("screen.reconnect")} accessibilityLabel={t("screen.reconnectNamed", { workspace: team.orchestratorWorkspace })} disabled={reconnectBusy} onPress={() => { restored.reset(); setReconnecting(`${project.id}:${team.file}`); }} />
+                <Button s={s} compact label={t("screen.reconnect")} accessibilityLabel={t("screen.reconnectNamed", { workspace: team.orchestratorWorkspace })} disabled={reconnectBusy} onPress={() => { restored.reset(); setReconnecting(`${project.id}:${team.file}`); }} />
               )}
               <LinkButton
                 label={t("screen.deleteTeam")}
                 accessibilityLabel={t("screen.deleteTeamNamed", { workspace: team.orchestratorWorkspace })}
                 color={theme.colors.foregroundMuted}
+                colors={theme.colors}
                 disabled={deleted.isPending}
                 onPress={() => setConfirming(`${project.id}:${team.file}`)}
                 style={{ marginLeft: "auto" }}
@@ -331,10 +333,10 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
             >
               <View style={s.row}>
                 {reconnectChoices(project.workspaces, project.teams, team).map((workspace) => (
-                  <Button key={workspace.id} s={s} label={workspace.title} disabled={reconnectBusy} onPress={() => reconnected.mutate({ projectId: project.id, file: team.file, workspaceId: workspace.id })} />
+                  <Button key={workspace.id} s={s} compact label={workspace.title} disabled={reconnectBusy} onPress={() => reconnected.mutate({ projectId: project.id, file: team.file, workspaceId: workspace.id })} />
                 ))}
-                <Button s={s} secondary label={t("screen.startNewWorkspace")} disabled={reconnectBusy} onPress={() => restored.mutate({ projectId: project.id, file: team.file })} />
-                <Button s={s} secondary label={t("review.cancel")} disabled={reconnectBusy} onPress={() => setReconnecting(null)} />
+                <Button s={s} compact secondary label={t("screen.startNewWorkspace")} disabled={reconnectBusy} onPress={() => restored.mutate({ projectId: project.id, file: team.file })} />
+                <Button s={s} compact secondary label={t("review.cancel")} disabled={reconnectBusy} onPress={() => setReconnecting(null)} />
               </View>
               <Notice tone="status" announce={reconnectBusy ? t(restored.isPending ? "result.applying" : "loading") : ""} style={s.row}>
                 {reconnectBusy ? <><ActivityIndicator color={theme.colors.accent} /><Text style={s.muted}>{t(restored.isPending ? "result.applying" : "loading")}</Text></> : null}
@@ -353,8 +355,8 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
               }
             >
               <View style={s.row}>
-                <Button s={s} label={t("screen.deleteYes")} disabled={deleted.isPending} onPress={() => deleted.mutate({ projectId: project.id, file: team.file })} />
-                <Button s={s} secondary label={t("review.cancel")} disabled={deleted.isPending} onPress={() => setConfirming(null)} />
+                <Button s={s} compact danger label={t("screen.deleteYes")} disabled={deleted.isPending} onPress={() => deleted.mutate({ projectId: project.id, file: team.file })} />
+                <Button s={s} compact secondary label={t("review.cancel")} disabled={deleted.isPending} onPress={() => setConfirming(null)} />
               </View>
             </Prompt>
           </Group>
@@ -388,7 +390,7 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
   );
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.body}>
-      <Text accessibilityRole="header" style={[s.title, { fontSize: 20, fontWeight: "700" }]}>{t("screen.title")}</Text>
+      <Text accessibilityRole="header" style={s.heading}>{t("screen.title")}</Text>
       <Tabs
         id={tabsId}
         label={t("screen.tabsLabel")}
@@ -418,9 +420,7 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
             />
             <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", gap: 12 }}>
               <DensityToggle colors={theme.colors} state={dashState} setState={setDashState} />
-              <View style={{ marginTop: -12 }}>
-                <ClosedControls colors={theme.colors} state={dashState} setState={setDashState} closedIds={closedIds} pad={0} />
-              </View>
+              <ClosedControls colors={theme.colors} state={dashState} setState={setDashState} closedIds={closedIds} />
             </View>
           </View>
           <Notice tone="status">
@@ -452,13 +452,13 @@ export function TeamScreen({ theme, layout, navigation, params, openTeamPanel }:
       </View>
       {emptyProjects.length ? (
         <View style={[s.card, { padding: 0, gap: 0, overflow: "hidden" }]}>
-          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 12, paddingVertical: 10 }}>
-            <Text style={[s.text, { fontWeight: "600" }]}>{t("screen.emptyProjects")}</Text>
-            <Text style={s.muted}>{emptyProjects.length}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 40, paddingHorizontal: 14, paddingVertical: 8 }}>
+            <Text style={s.itemTitle}>{t("screen.emptyProjects")}</Text>
+            <View style={s.chip}><Text style={s.muted}>{emptyProjects.length}</Text></View>
           </View>
           {emptyProjects.map((project) => (
-            <View key={project.id} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
-              <Text style={[s.text, { fontSize: 13, fontWeight: "600" }]}>{project.name}</Text>
+            <View key={project.id} style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36, paddingHorizontal: 14, paddingVertical: 8, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
+              <Text style={[s.text, { fontWeight: "600" }]}>{project.name}</Text>
               <Text style={[s.muted, { flex: 1, minWidth: 0 }]} numberOfLines={1}>{project.root}</Text>
               {newTeamLink(project)}
             </View>

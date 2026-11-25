@@ -10,7 +10,7 @@ import { blankOrchestratorModel, effortChoices, latestResult, noticesOf, outcome
 import { foldersText, newRole, parseFolders } from "../shared/draft";
 import { EMPTY_HISTORY, record, undo, redo, type DraftHistory } from "../shared/draft-history";
 import { messages } from "./i18n";
-import { Button, Errors, Field, Group, Notice, Prompt, webAria } from "./ui/controls";
+import { Button, Errors, Field, Group, Notice, Prompt, useFocusRing, webAria } from "./ui/controls";
 import { PickerModal, type SelectRequest } from "./ui/Picker";
 import { styles, type Colors, type Styles } from "./ui/styles";
 import { teamApplyRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamPlannerCancelRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamRestartOrchestratorRpc, teamEditProposalRpc, teamEditProposeRpc, teamShareRpc, teamUnshareRpc } from "../shared/rpc";
@@ -24,16 +24,20 @@ const SelectContext = createContext<(request: SelectRequest) => void>(() => {});
 
 function Select({ s, label, options, value, onChange, compact }: { s: Styles; label: string; options: readonly string[]; value: string; onChange(value: string): void; compact?: boolean }) {
   const openSelect = useContext(SelectContext);
+  const focus = useFocusRing(s.colors);
+  const trigger = useRef<View>(null);
   return (
     <Pressable
+      ref={trigger}
       accessibilityRole="button"
       accessibilityLabel={`${label}: ${value || "—"}`}
       {...webAria({ "aria-haspopup": "dialog" })}
-      onPress={() => openSelect({ label, options, value, onChange })}
-      style={compact ? s.selectCompact : s.select}
+      onPress={() => openSelect({ label, options, value, onChange, restoreFocus: () => trigger.current?.focus() })}
+      {...focus.handlers}
+      style={[compact ? s.selectCompact : s.select, focus.ring]}
     >
-      <Text style={[s.text, compact ? { fontSize: 12 } : null]}>{value || "—"}</Text>
-      <Text aria-hidden style={s.muted}>▾</Text>
+      <Text style={[s.text, compact ? { fontSize: 12 } : null]} numberOfLines={1}>{value || "—"}</Text>
+      <Text aria-hidden style={[s.muted, { fontSize: 10 }]}>▾</Text>
     </Pressable>
   );
 }
@@ -45,7 +49,7 @@ function ModelPicker({ s, catalog, provider, model, onChange, extra }: { s: Styl
   const models = ready.find((entry) => entry.id === provider)?.models.map((entry) => entry.id) ?? [];
   return (
     <View style={s.row}>
-      <Text style={s.muted}>{t("role.providerAndModel")}</Text>
+      <Text style={s.label}>{t("role.providerAndModel")}</Text>
       <Select
         s={s}
         compact
@@ -85,7 +89,7 @@ function EffortPicker({ s, catalog, provider, model, effort, onChange }: { s: St
   const defaultOption = t("role.effortDefault", { effort: info?.defaultEffort ? labelOf(info.defaultEffort) : "—" });
   return (
     <>
-      <Text style={s.muted}>{t("role.effort")}</Text>
+      <Text style={s.label}>{t("role.effort")}</Text>
       <Select
         s={s}
         compact
@@ -115,14 +119,14 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
   const foldersExpanded = showFolders || role.folders.length > 0;
   const roleName = role.name.trim() || t("role.name");
   return (
-    <Group label={roleName} style={[s.card, s.roleCard, { padding: 8, gap: 4 }]}>
+    <Group label={roleName} style={[s.card, s.roleCard, { padding: 12, gap: 10 }]}>
       <View style={{ gap: 4 }}>
-        <Text style={s.muted}>{t("role.name")}</Text>
+        <Text style={s.label}>{t("role.name")}</Text>
         <View style={s.row}>
           <Field
             label={t("role.name")}
             labelHidden
-            style={[s.inputCompact, { flex: 1, minWidth: 0 }]}
+            style={[s.inputCompact, { flex: 1, minWidth: 0, fontWeight: "600" }]}
             value={role.name}
             placeholder={t("role.name")}
             onChangeText={(name) => {
@@ -137,7 +141,7 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
       {foldersExpanded ? (
         <Field
           label={t("role.folders")}
-          labelStyle={s.muted}
+          labelStyle={s.label}
           style={s.inputCompact}
           value={folders}
           placeholder={t("role.folders")}
@@ -151,16 +155,16 @@ function RoleEditor({ s, role, catalog, onChange, onEditInstructions, onRemove }
           <Button s={s} compact secondary label={t("role.setFolders")} onPress={() => setShowFolders(true)} />
         </View>
       )}
-      <View style={{ gap: 4 }}>
-        <Text style={s.muted}>{t("role.instructions")}</Text>
+      <View style={[s.divider, { gap: 4, paddingTop: 10 }]}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <Text style={s.label}>{t("role.instructions")}</Text>
+          <Button s={s} compact secondary label={t("role.editInstructions")} accessibilityLabel={t("role.editInstructionsNamed", { role: roleName })} onPress={onEditInstructions} />
+        </View>
         {role.instructions.trim() ? (
           <Text numberOfLines={3} style={s.text}>{role.instructions.trim()}</Text>
         ) : (
           <Text style={s.muted}>{t("role.noInstructions")}</Text>
         )}
-        <View style={s.row}>
-          <Button s={s} compact secondary label={t("role.editInstructions")} accessibilityLabel={t("role.editInstructionsNamed", { role: roleName })} onPress={onEditInstructions} />
-        </View>
       </View>
     </Group>
   );
@@ -371,7 +375,7 @@ function TeamModel({ provider, model, effort, colors, icons }: { provider: strin
   const icon = providerIcon(provider, icons.get(provider));
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
-      <View style={{ width: 24, height: 24, borderRadius: 8, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
         {icon.kind === "svg" ? <Icon icon={{ svg: icon.svg }} size={14} color={colors.foreground} /> : <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 12 }}>{icon.letter}</Text>}
       </View>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{effort ? `${model} · ${effort}` : model}</Text>
@@ -386,8 +390,8 @@ function CurrentTeamTree({ team, s, colors, compact, icons }: { team: Team; s: S
   return (
     <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ flexDirection: stacked ? "column" : "row", alignItems: stacked ? "stretch" : "center", gap: stacked ? 12 : 0 }}>
       <View style={[s.orchestratorCard, { gap: 8, minWidth: 0, ...(stacked ? {} : { width: 200 }) }]}>
-        <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{t("review.orchestrator")}</Text>
-        <Text style={[s.text, { fontWeight: "700" }]}>{team.orchestrator.workspace}</Text>
+        <Text style={s.orchestratorLabel}>{t("review.orchestrator")}</Text>
+        <Text style={s.itemTitle}>{team.orchestrator.workspace}</Text>
         <TeamModel {...team.orchestrator} colors={colors} icons={icons} />
       </View>
       {!stacked && team.roles.length > 0 ? <View style={{ width: 20, height: 2, backgroundColor: colors.border }} /> : null}
@@ -398,17 +402,17 @@ function CurrentTeamTree({ team, s, colors, compact, icons }: { team: Team; s: S
               <View style={{ position: "absolute", left: 0, top: index === 0 ? "50%" : 0, bottom: index === team.roles.length - 1 ? "50%" : 0, width: 2, backgroundColor: colors.border }} />
               <View style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 2, backgroundColor: colors.border }} />
             </View>
-            <View style={{ flex: 1, minWidth: 0, paddingVertical: 5 }}>
-              <View style={[s.card, { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, backgroundColor: colors.surface0 }]}>
-                <Text style={[s.text, { fontWeight: "700", minWidth: 88, maxWidth: "100%", flexShrink: 1 }]}>{role.name}</Text>
+            <View style={{ flex: 1, minWidth: 0, paddingVertical: 4 }}>
+              <View style={[s.card, { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, minHeight: 44, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: colors.surface0 }]}>
+                <Text style={[s.itemTitle, { minWidth: 84, maxWidth: "100%", flexShrink: 1 }]}>{role.name}</Text>
                 <TeamModel provider={role.provider} model={role.model} effort={role.effort} colors={colors} icons={icons} />
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, minWidth: 0, flexShrink: 1 }}>
                   {(role.folders.length ? role.folders.slice(0, 3) : [t("current.noFolderLimit")]).map((folder, at) => (
-                    <View key={at} style={{ borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3, backgroundColor: colors.surface2, maxWidth: "100%" }}>
+                    <View key={at} style={s.chip}>
                       <Text style={s.muted}>{folder}</Text>
                     </View>
                   ))}
-                  {role.folders.length > 3 ? <View style={{ borderRadius: 5, paddingHorizontal: 6, paddingVertical: 3, backgroundColor: colors.surface2 }}><Text style={s.muted}>{t("current.moreFolders", { count: role.folders.length - 3 })}</Text></View> : null}
+                  {role.folders.length > 3 ? <View style={s.chip}><Text style={s.muted}>{t("current.moreFolders", { count: role.folders.length - 3 })}</Text></View> : null}
                 </View>
               </View>
             </View>
@@ -704,8 +708,10 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
 
   return (
     <ScrollView ref={scrollRef} style={s.screen} contentContainerStyle={s.body}>
-      <Text accessibilityRole="header" style={s.title}>{t("title", { project: data.project.name })}</Text>
-      <Text style={s.muted}>{data.project.root}/{data.file ?? `${TEAMS_DIR}/`}</Text>
+      <View style={{ gap: 2 }}>
+        <Text accessibilityRole="header" style={s.title}>{t("title", { project: data.project.name })}</Text>
+        <Text style={s.muted}>{data.project.root}/{data.file ?? `${TEAMS_DIR}/`}</Text>
+      </View>
 
       {data.errors.map((error) => <Text key={error} style={s.danger}>{error}</Text>)}
       {data.team && !draft ? (
@@ -717,14 +723,17 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                 : t("current.sharedTeam", { home: data.team.orchestrator.workspace, count: data.sharedWorkspaces.length + 1 })}
             </Text>
           ) : null}
-          <View style={[s.row, { justifyContent: "flex-end" }]}>
-            <Button s={s} label={t("current.edit")} onPress={() => beginDraft(data.team!)} />
-            <Button s={s} secondary label={t("current.reapply")} disabled={applied.isPending || restarted.isPending} onPress={() => applied.mutate(data.team!)} />
-            <Button s={s} secondary label={t("current.restart")} disabled={applied.isPending || restarted.isPending} onPress={() => setConfirmRestart(true)} />
-            {sharedHere ? <Button s={s} secondary label={t("current.unshare")} disabled={unshared.isPending} onPress={() => setConfirmUnshare(true)} /> : null}
+          <View style={{ gap: 4, alignItems: "flex-end" }}>
+            <View style={[s.row, { justifyContent: "flex-end" }]}>
+              <Button s={s} label={t("current.edit")} onPress={() => beginDraft(data.team!)} />
+              <Button s={s} secondary label={t("current.reapply")} disabled={applied.isPending || restarted.isPending} onPress={() => applied.mutate(data.team!)} />
+              <Button s={s} secondary label={t("current.restart")} disabled={applied.isPending || restarted.isPending} onPress={() => setConfirmRestart(true)} />
+              {sharedHere ? <Button s={s} secondary label={t("current.unshare")} disabled={unshared.isPending} onPress={() => setConfirmUnshare(true)} /> : null}
+            </View>
+            <Text style={[s.muted, { textAlign: "right" }]}>{t("current.restartHint")}</Text>
           </View>
           {sharedHere && confirmUnshare ? (
-            <View style={{ backgroundColor: theme.colors.surface2, borderRadius: 6, padding: 10, gap: 6 }}>
+            <View style={s.inset}>
               <Text style={s.text}>{t("current.unshareConfirm", { home: data.team.orchestrator.workspace })}</Text>
               <View style={s.row}>
                 <Button s={s} label={t("current.unshare")} disabled={unshared.isPending} onPress={() => unshared.mutate()} />
@@ -735,7 +744,6 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
           ) : null}
           <CurrentTeamTree team={data.team} s={s} colors={theme.colors} compact={layout.compact} icons={providerIcons} />
           {data.validation.map((error) => <Text key={error.target + error.message} style={s.danger}>{error.target}: {error.message}</Text>)}
-          <Text style={s.muted}>{t("current.restartHint")}</Text>
         </View>
       ) : null}
 
@@ -813,8 +821,8 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
           </View>
           <Errors s={s} errors={[...(planning.data?.status === "failed" ? planning.data.errors : []), ...(start.error ? [String(start.error)] : [])]} />
           {here !== null && data.projectTeams.length ? (
-            <View style={{ marginTop: 6, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 10, gap: 6 }}>
-              <Text style={[s.text, { fontWeight: "600" }]}>{t("create.copyTitle")}</Text>
+            <View style={[s.divider, { marginTop: 6, paddingTop: 12, gap: 6 }]}>
+              <Text style={s.itemTitle}>{t("create.copyTitle")}</Text>
               <Text style={s.muted}>{t("create.copyHint")}</Text>
               <View style={{ borderWidth: 1, borderColor: theme.colors.border, borderRadius: 6, overflow: "hidden" }}>
                 {data.projectTeams.map((entry, index) => (
@@ -827,8 +835,8 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                       {entry.goal ? <Text style={s.muted} numberOfLines={2}>{entry.goal}</Text> : null}
                     </View>
                     <View style={s.row}>
-                      <Button s={s} secondary label={t("create.copy")} accessibilityLabel={t("create.copyNamed", { workspace: entry.workspace })} disabled={shared.isPending} onPress={() => beginDraft(fresh(copyTeamTo(entry.team, here)))} />
-                      <Button s={s} secondary label={t("create.share")} accessibilityLabel={t("create.shareNamed", { workspace: entry.workspace })} disabled={shared.isPending || start.isPending || targetWorkspaceId === null} onPress={() => shared.mutate(entry.file)} />
+                      <Button s={s} compact secondary label={t("create.copy")} accessibilityLabel={t("create.copyNamed", { workspace: entry.workspace })} disabled={shared.isPending} onPress={() => beginDraft(fresh(copyTeamTo(entry.team, here)))} />
+                      <Button s={s} compact secondary label={t("create.share")} accessibilityLabel={t("create.shareNamed", { workspace: entry.workspace })} disabled={shared.isPending || start.isPending || targetWorkspaceId === null} onPress={() => shared.mutate(entry.file)} />
                     </View>
                   </View>
                 ))}
@@ -844,7 +852,7 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
         <SelectContext.Provider value={setPicker}>
           <View style={{ gap: 10 }}>
             <Text accessibilityRole="header" style={s.title}>{t("review.title")}</Text>
-            <View style={[s.orchestratorCard, { padding: 8, gap: 4 }]}>
+            <View style={s.orchestratorCard}>
               <Text style={s.orchestratorLabel}>{t("review.orchestrator")}</Text>
               {here === null && !(data.team && data.sharedWorkspaces.length) ? (
                 <Field label={t("role.workspace")} labelHidden style={s.inputCompact} value={draft.orchestrator.workspace} placeholder={t("role.workspace")} onChangeText={(workspace) => setDraft((current) => (current ? { ...current, orchestrator: { ...current.orchestrator, workspace } } : current))} />
@@ -874,9 +882,11 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
                     ))}
                   </View>
                 ))}
-                <Button s={s} compact secondary label={t("review.addRole")} onPress={() => setDraft((current) => (current ? { ...current, roles: [...current.roles, newRole(catalog, current.roles.map((role) => role.name))] } : current))} />
+                <View style={s.row}>
+                  <Button s={s} compact secondary icon={<Icon name="Plus" size={14} color={theme.colors.foreground} />} label={t("review.addRole")} onPress={() => setDraft((current) => (current ? { ...current, roles: [...current.roles, newRole(catalog, current.roles.map((role) => role.name))] } : current))} />
+                </View>
                 <View style={s.card}>
-                  <Field label={t("review.teamEditRequest")} labelHidden style={[s.inputCompact, { minHeight: 36 }]} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
+                  <Field label={t("review.teamEditRequest")} labelHidden style={[s.input, { minHeight: 56, textAlignVertical: "top" }]} value={editRequest} placeholder={t("review.teamEditRequest")} multiline onChangeText={setEditRequest} />
                   <View style={s.row}>
                     <Button s={s} compact secondary label={t("review.editTeamWithAi")} disabled={!editRequest.trim() || editBusy} onPress={() => startTeamEdit.mutate(draft)} />
                     <Button s={s} compact secondary label={t("review.undo")} disabled={!history.past.length || editBusy} onPress={() => { const result = undo(history, draft); if (result) { setHistory(result.history); setDraft(result.draft); setEditNotice(null); } }} />
@@ -904,9 +914,9 @@ export function TeamEditor({ theme, layout, navigation, target, onApplied }: Pic
             <Notice tone="status" style={{ gap: 4 }}>
               {problems.map((problem) => <Text key={problem} style={s.danger}>{problem}</Text>)}
             </Notice>
-            <View style={s.row}>
-              <Button s={s} compact label={t("review.apply")} disabled={problems.length > 0 || applied.isPending} onPress={() => applied.mutate(draft)} />
-              <Button s={s} compact secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); closeReview(); }} />
+            <View style={[s.row, s.divider, { paddingTop: 12 }]}>
+              <Button s={s} label={t("review.apply")} disabled={problems.length > 0 || applied.isPending} onPress={() => applied.mutate(draft)} />
+              <Button s={s} secondary label={t("review.cancel")} onPress={() => { if (plannerId) cancelled.mutate(); closeReview(); }} />
             </View>
           </View>
         </SelectContext.Provider>
