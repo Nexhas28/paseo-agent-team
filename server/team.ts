@@ -3,12 +3,12 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { access, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ensureWorkspaces, planWorkspaces, workspaceLabel } from "../shared/apply-plan";
-import { findOrchestrator, orchestratorsToArchive, teamAgentsToArchive, LABEL, pendingPlanners, PLANNER_WORKSPACE, plannerCleanup, PROPOSAL_FOR, proposalTarget } from "../shared/cleanup";
-import { CLAUDE_LOCAL_SETTINGS, needsCreateAgentPermission, needsRunPermission, PASEO_CREATE_AGENT_RULE, PASEO_RUN_RULE, withAllowRule } from "../shared/permissions";
+import { type AgentRef, EDIT_FOR, findOrchestrator, orchestratorsToArchive, teamAgentsToArchive, LABEL, pendingPlanners, PLANNER_WORKSPACE, plannerCleanup, PROPOSAL_FOR, proposalTarget } from "../shared/cleanup";
+import { CLAUDE_LOCAL_SETTINGS, needsCreateAgentPermission, needsRunPermission, PASEO_CREATE_AGENT_RULE, PASEO_RUN_RULE, permissionsProblem, withAllowRule } from "../shared/permissions";
 import { orchestratorPrompt, teamChangedMessage } from "../shared/prompt";
 import { extractInstructions, extractProposal, INSTRUCTIONS_JSON_SCHEMA, instructionsPrompt, plannerPrompt, teamEditPrompt, TEAM_JSON_SCHEMA } from "../shared/proposal";
 import { plannerWorkspace, teamWorkspaceId, type ProjectRef } from "../shared/projects";
-import type { teamApplyRpc, teamDeleteRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamProjectsRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamReconnectRpc, teamRestartOrchestratorRpc, teamRestoreRpc, teamEditProposalRpc, teamEditProposeRpc, teamRosterRpc, teamShareRpc, teamUnshareRpc } from "../shared/rpc";
+import type { teamApplyRpc, teamDeleteRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamPlannerCancelRpc, teamProjectsRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamReconnectRpc, teamRestartOrchestratorRpc, teamRestoreRpc, teamEditProposalRpc, teamEditProposeRpc, teamRosterRpc, teamShareRpc, teamUnshareRpc } from "../shared/rpc";
 import { checkTeam, parseTeam, serializeTeam, TEAM_FILE, type Team } from "../shared/team";
 import { isHome, isSharedWith, legacyWorkspacesOf, otherTeams, sameTeamFiles, shareTeam, teamAtHome, teamFileFor, teamFileWorkspaces, teamIn, teamWorkspaces, unshareTeam, workspaceOwnerOf, TEAMS_DIR, workspaceClashes, workspacesOfOtherTeams, type TeamFile } from "../shared/team-files";
 import { agentFeaturesOf, catalogFrom, roleModes, agentModeOf, type AgentFeatures, validateTeam, type ProviderEntry } from "../shared/validate";
@@ -67,7 +67,8 @@ function plannerProvider(entries: readonly ProviderEntry[]): string {
   const ready = entries.filter((entry) => entry.enabled && entry.status === "ready");
   const entry = ready.find((candidate) => candidate.provider === "claude") ?? ready[0];
   if (!entry) throw new Error("No provider is ready on this host.");
-  const models = (entry.models ?? []) as readonly { id: string; isDefault?: boolean }[];
+  // Like the catalog, skip models the provider marks as not selectable.
+  const models = ((entry.models ?? []) as readonly { id: string; isDefault?: boolean; isSelectable?: boolean }[]).filter((candidate) => candidate.isSelectable !== false);
   const model = models.find((candidate) => candidate.isDefault) ?? models[0];
   return model ? `${entry.provider}/${model.id}` : entry.provider;
 }
@@ -75,11 +76,12 @@ function plannerProvider(entries: readonly ProviderEntry[]): string {
 export async function projectTeamsList(_input: RpcInput<typeof teamProjectsRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamProjectsRpc>> {
   const [projects, { entries }] = await Promise.all([allProjects(paseo), paseo.workspaces.list()]);
   return Promise.all(projects.map(async (project) => {
-    const { teams, errors } = await projectTeams(project);
+    // One project whose team folder can't be read must not hide every other project.
+    const { teams, errors } = await projectTeams(project).catch((error: unknown) => ({ teams: [] as TeamFile[], errors: [`${TEAMS_DIR}: ${String(error)}`] }));
     return {
       ...project,
       workspaces: entries.filter((entry) => entry.projectId === project.id && !entry.archivingAt).map((entry) => ({ id: entry.id, title: workspaceLabel(entry) })),
-      teams: teams.map(({ file, team }) => ({
+      teams: oneFilePerTeam(teams).map(({ file, team }) => ({
         file,
         goal: team.goal,
         orchestratorWorkspace: team.orchestrator.workspace,
@@ -144,7 +146,7 @@ export async function teamRoster({ workspaceId }: RpcInput<typeof teamRosterRpc>
   const idOf = (title: string) => teamWorkspaceId(entries, project.id, title);
   return {
     // A shared workspace runs its own orchestrator and roles, so it gets its own entry.
-    teams: teams.flatMap(({ team }) => teamWorkspaces(team).map((title) => {
+    teams: oneFilePerTeam(teams).flatMap(({ team }) => teamWorkspaces(team).map((title) => {
       const orchestratorWorkspaceId = idOf(title);
       return {
         orchestratorWorkspaceId,
@@ -153,6 +155,14 @@ export async function teamRoster({ workspaceId }: RpcInput<typeof teamRosterRpc>
     })),
     errors,
   };
+}
+
+/**
+ * One file per team: of several files for the same home (an old `.agents/team.json` beside its new file), the one
+ * `teamAtHome` and `teamIn` pick, which is the one the panel reads and Apply writes first.
+ */
+function oneFilePerTeam(teams: readonly TeamFile[]): TeamFile[] {
+  return teams.filter((entry) => teamAtHome(teams, entry.team.orchestrator.workspace) === entry);
 }
 
 /** The project's team files, relative to its root: the single-team file first, then the teams folder by name. */
@@ -171,7 +181,14 @@ async function projectTeams(project: ProjectRef): Promise<{ teams: TeamFile[]; n
   const teams: TeamFile[] = [];
   const errors: string[] = [];
   for (const file of names) {
-    const text = await readFile(join(project.root, file), "utf8");
+    // A folder named *.json, a dangling symlink or a file deleted since the listing is reported like a parse error.
+    let text: string;
+    try {
+      text = await readFile(join(project.root, file), "utf8");
+    } catch (error) {
+      errors.push(`${file}: ${String(error)}`);
+      continue;
+    }
     const parsed = parseTeam(text);
     if (parsed.ok) teams.push({ file, team: parsed.team, legacyWorkspaces: legacyWorkspacesOf(JSON.parse(text)) });
     else errors.push(...parsed.errors.map((error) => `${file}: ${error}`));
@@ -190,7 +207,8 @@ export async function readTeam(target: RpcInput<typeof teamReadRpc>, { paseo }: 
   const catalog = catalogFrom(await providerEntries(paseo));
   const [{ teams, errors }, { entries }] = await Promise.all([projectTeams(project), paseo.workspaces.list()]);
   const workspace = "workspaceId" in target ? await workspaceTitle(paseo, target.workspaceId) : null;
-  const own = workspace === null ? undefined : workspaceOwnerOf(teams, workspace);
+  // Only the team that runs here (home or shared); an old role workspace of a legacy file has no team but stays taken.
+  const own = workspace === null ? undefined : teamIn(teams, workspace);
   return {
     project,
     workspace,
@@ -242,17 +260,30 @@ export async function cancelProposal(target: RpcInput<typeof teamProposalCancelR
   return {};
 }
 
-/** Waits up to a second for a planner; its final message once it has finished. */
-async function plannerAnswer(paseo: PaseoApi, agentId: string): Promise<{ status: "running" } | { status: "failed"; errors: string[] } | { status: "finished"; message: string | null }> {
+/** Waits up to a second for a planner; its final message once it has finished. `waiting` means it still needs a permission answer. */
+async function plannerAnswer(paseo: PaseoApi, agentId: string): Promise<{ status: "running" } | { status: "failed"; errors: string[] } | { status: "waiting"; errors: string[] } | { status: "finished"; message: string | null }> {
   const result = await paseo.agents.ref(agentId).waitForFinish(1000);
   if (result.status === "timeout") return { status: "running" };
   if (result.status === "error") return { status: "failed", errors: [result.error ?? "the planner stopped with an error"] };
-  if (result.status === "permission") return { status: "failed", errors: ["the planner is waiting for a permission; answer it in the planner's chat, then try again"] };
+  if (result.status === "permission") return { status: "waiting", errors: ["the planner is waiting for a permission; answer it in the planner's chat, then try again"] };
   return { status: "finished", message: result.lastMessage };
+}
+
+/**
+ * Waits for a one-shot planner (team editor, instructions planner) and archives it once it has stopped, answered or not,
+ * so it doesn't stay behind; one waiting for a permission is kept so the user can answer it in its chat.
+ */
+async function oneShotAnswer(paseo: PaseoApi, agentId: string): Promise<{ status: "running" } | { status: "failed"; errors: string[] } | { status: "finished"; message: string | null }> {
+  const result = await plannerAnswer(paseo, agentId);
+  if (result.status === "running") return result;
+  if (result.status === "waiting") return { status: "failed", errors: result.errors };
+  await paseo.agents.ref(agentId).archive().catch(() => undefined);
+  return result;
 }
 
 export async function teamProposal({ agentId }: RpcInput<typeof teamProposalRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamProposalRpc>> {
   const result = await plannerAnswer(paseo, agentId);
+  if (result.status === "waiting") return { status: "failed", errors: result.errors };
   if (result.status !== "finished") return result;
   const parsed = extractProposal(result.message);
   if (!parsed.ok) return { status: "failed", errors: parsed.errors };
@@ -268,17 +299,16 @@ export async function proposeTeamEdit({ request, team, ...target }: RpcInput<typ
     title: "Team editor",
     prompt: teamEditPrompt(request, team, catalogFrom(entries)),
     outputSchema: TEAM_JSON_SCHEMA,
-    labels: { [LABEL]: "planner" },
+    labels: { [LABEL]: "planner", [EDIT_FOR]: proposalTarget(target) },
   });
   return { agentId: agent.id };
 }
 
 export async function teamEditProposal({ agentId }: RpcInput<typeof teamEditProposalRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamEditProposalRpc>> {
-  const result = await plannerAnswer(paseo, agentId);
+  const result = await oneShotAnswer(paseo, agentId);
   if (result.status !== "finished") return result;
   const parsed = extractProposal(result.message);
   if (!parsed.ok) return { status: "failed", errors: parsed.errors };
-  await paseo.agents.ref(agentId).archive().catch(() => undefined);
   return { status: "done", team: parsed.team, validation: validateTeam(parsed.team, catalogFrom(await providerEntries(paseo))) };
 }
 
@@ -291,16 +321,25 @@ export async function improveInstructions({ role, request, team, ...target }: Rp
     title: "Instructions planner",
     prompt: instructionsPrompt(role, request, team),
     outputSchema: INSTRUCTIONS_JSON_SCHEMA,
-    labels: { [LABEL]: "planner" },
+    labels: { [LABEL]: "planner", [EDIT_FOR]: proposalTarget(target) },
   });
   return { agentId: agent.id };
 }
 
 export async function instructionsProposal({ agentId }: RpcInput<typeof teamInstructionsProposalRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamInstructionsProposalRpc>> {
-  const result = await plannerAnswer(paseo, agentId);
+  const result = await oneShotAnswer(paseo, agentId);
   if (result.status !== "finished") return result;
   const parsed = extractInstructions(result.message);
   return parsed.ok ? { status: "done", instructions: parsed.instructions } : { status: "failed", errors: parsed.errors };
+}
+
+/** Archives one planner by id; only agents labelled as planners can be archived this way. */
+export async function cancelPlanner({ agentId }: RpcInput<typeof teamPlannerCancelRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamPlannerCancelRpc>> {
+  const agent = (await paseo.agents.list()).entries.map((entry) => entry.agent).find((candidate) => candidate.id === agentId);
+  if (!agent || agent.archivedAt) return {};
+  if (agent.labels[LABEL] !== "planner") throw new Error(`Agent ${agentId} is not a team planner.`);
+  await paseo.agents.ref(agentId).archive();
+  return {};
 }
 
 /** Archives agents, returning failures with the caller's label. */
@@ -310,10 +349,16 @@ async function archiveAgents(paseo: PaseoApi, ids: readonly string[], prefix: st
   return failures;
 }
 
-/** Archives the planners, then their emptied workspaces; returns what failed instead of throwing. */
-async function archivePlanners(paseo: PaseoApi, targets: { agents: string[]; workspaces: string[] }): Promise<string[]> {
-  const failures = await archiveAgents(paseo, targets.agents, "planner");
-  for (const id of targets.workspaces) {
+/** Archives the planners, then their emptied workspaces except one a planner could not be archived in; returns what failed instead of throwing. */
+async function archivePlanners(paseo: PaseoApi, targets: { agents: string[]; workspaces: string[] }, agents: readonly AgentRef[]): Promise<string[]> {
+  const failures: string[] = [];
+  const blocked = new Set<string>();
+  for (const id of targets.agents) {
+    const failed = await archiveAgents(paseo, [id], "planner");
+    failures.push(...failed);
+    if (failed.length) blocked.add(agents.find((agent) => agent.id === id)?.workspaceId ?? "");
+  }
+  for (const id of targets.workspaces.filter((workspace) => !blocked.has(workspace))) {
     const result = await paseo.workspaces.archive(id).catch((error: unknown) => ({ error: String(error) }));
     if (result.error) failures.push(`workspace ${id}: ${result.error}`);
   }
@@ -337,6 +382,8 @@ async function allowPaseoRun(project: ProjectRef, rules: string[] = [PASEO_RUN_R
     return { ok: false, errors: [`${CLAUDE_LOCAL_SETTINGS} is not valid JSON: ${(error as Error).message}`] };
   }
   if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return { ok: false, errors: [`${CLAUDE_LOCAL_SETTINGS} is not a JSON object`] };
+  const problem = permissionsProblem(settings as Record<string, unknown>);
+  if (problem) return { ok: false, errors: [`${CLAUDE_LOCAL_SETTINGS}: ${problem}; fix it before applying the team`] };
   let next = settings as Record<string, unknown>;
   for (const rule of rules) next = withAllowRule(next, rule) ?? next;
   if (next === settings) return { ok: true, file: null };
@@ -365,31 +412,48 @@ async function startOrchestrator(paseo: PaseoApi, workspaceId: string, workspace
   });
 }
 
-/** Keeps the workspace's orchestrator already running on the team's model and mode and tells it to re-read the team, else starts one; returns its id. */
-async function runOrchestrator(paseo: PaseoApi, agents: Parameters<typeof findOrchestrator>[0], workspaceId: string, workspace: string, team: Team, relative: string, providers: readonly ProviderEntry[], features: Record<string, AgentFeatures>, featureValues: AgentFeatures): Promise<string> {
+/**
+ * Keeps the workspace's orchestrator already running on the team's model and mode and tells it to re-read the team, else
+ * archives the workspace's other orchestrators and starts one, so two never delegate to the same role sessions.
+ * Returns its id and the orchestrators that could not be archived.
+ */
+async function runOrchestrator(paseo: PaseoApi, agents: Parameters<typeof findOrchestrator>[0], workspaceId: string, workspace: string, team: Team, relative: string, providers: readonly ProviderEntry[], features: Record<string, AgentFeatures>, featureValues: AgentFeatures): Promise<{ id: string; failures: string[] }> {
   const modes = roleModes(team, providers);
   const orchestratorMode = agentModeOf(providers, team.orchestrator.provider);
   const defaultEffort = providers.find((entry) => entry.provider === team.orchestrator.provider)?.models?.find((model) => model.id === team.orchestrator.model)?.defaultThinkingOptionId;
   const running = findOrchestrator(agents, workspaceId, team, orchestratorMode, defaultEffort);
   if (running) {
     await paseo.agents.ref(running.id).send(teamChangedMessage(team, modes, relative, features, workspace));
-    return running.id;
+    return { id: running.id, failures: [] };
   }
-  return (await startOrchestrator(paseo, workspaceId, workspace, team, modes, orchestratorMode, relative, features, featureValues)).id;
+  const failures = await archiveAgents(paseo, orchestratorsToArchive(agents, workspaceId), "orchestrator");
+  return { id: (await startOrchestrator(paseo, workspaceId, workspace, team, modes, orchestratorMode, relative, features, featureValues)).id, failures };
 }
 
-/** Tells the orchestrators in the team's other workspaces (home and shared, except `skipId`) that the team changed; returns what failed. */
-async function notifyOrchestrators(paseo: PaseoApi, agents: Parameters<typeof orchestratorsToArchive>[0], workspaces: Parameters<typeof teamWorkspaceId>[0], project: ProjectRef, team: Team, skipId: string, relative: string, providers: readonly ProviderEntry[], features: Record<string, AgentFeatures>): Promise<string[]> {
+/**
+ * Tells the orchestrators in the team's other workspaces (home and shared, except `skipId`) that the team changed.
+ * Returns what failed, and as notices (advice, not failures) each one still on another provider/model, effort or mode
+ * than the team's. Those are not restarted here, which would cut off work in progress; the user resets that workspace's session instead.
+ */
+async function notifyOrchestrators(paseo: PaseoApi, agents: Parameters<typeof findOrchestrator>[0], workspaces: Parameters<typeof teamWorkspaceId>[0], project: ProjectRef, team: Team, skipId: string, relative: string, providers: readonly ProviderEntry[], features: Record<string, AgentFeatures>, reportOutdated = true): Promise<{ failures: string[]; notices: string[] }> {
   const modes = roleModes(team, providers);
+  const orchestratorMode = agentModeOf(providers, team.orchestrator.provider);
+  const defaultEffort = providers.find((entry) => entry.provider === team.orchestrator.provider)?.models?.find((model) => model.id === team.orchestrator.model)?.defaultThinkingOptionId;
+  const describe = (provider: string, model: string | null | undefined, effort: string | null | undefined) => `${provider}/${model ?? "?"}${effort ? ` (effort ${effort})` : ""}`;
   const failures: string[] = [];
+  const notices: string[] = [];
   for (const title of teamWorkspaces(team)) {
     const id = teamWorkspaceId(workspaces, project.id, title);
     if (id === null || id === skipId) continue;
     for (const agentId of orchestratorsToArchive(agents, id)) {
       await paseo.agents.ref(agentId).send(teamChangedMessage(team, modes, relative, features, title)).catch((error: unknown) => failures.push(`orchestrator ${agentId} in ${title}: ${String(error)}`));
+      const agent = agents.find((candidate) => candidate.id === agentId)!;
+      if (reportOutdated && !findOrchestrator([agent], id, team, orchestratorMode, defaultEffort)) {
+        notices.push(`orchestrator ${agentId} in ${title} still runs on ${describe(agent.provider, agent.model, agent.thinkingOptionId)} or another mode; use Reset session in ${title} to restart it on ${describe(team.orchestrator.provider, team.orchestrator.model, team.orchestrator.effort)}`);
+      }
     }
   }
-  return failures;
+  return { failures, notices };
 }
 
 /** Restarts the orchestrator of the target workspace, the team's home or one of its shared workspaces. */
@@ -424,10 +488,15 @@ export async function restoreTeam({ projectId, file }: RpcInput<typeof teamResto
   const { teams } = await projectTeams(project);
   const saved = teams.find((entry) => entry.file === file);
   if (!saved) return { ok: false, errors: [`Team file ${file} was not found.`] };
-  return applyTeam({ projectId, team: saved.team }, ctx);
+  return applyTeamTo({ projectId, team: saved.team }, ctx, true);
 }
 
-export async function applyTeam({ team: input, ...target }: RpcInput<typeof teamApplyRpc>, { paseo }: PluginHandlerContext): Promise<RpcOutput<typeof teamApplyRpc>> {
+export async function applyTeam(input: RpcInput<typeof teamApplyRpc>, ctx: PluginHandlerContext): Promise<RpcOutput<typeof teamApplyRpc>> {
+  return applyTeamTo(input, ctx, false);
+}
+
+/** Applies a draft, or with `restore` a saved team re-applied from its own file. */
+async function applyTeamTo({ team: input, ...target }: RpcInput<typeof teamApplyRpc>, { paseo }: PluginHandlerContext, restore: boolean): Promise<RpcOutput<typeof teamApplyRpc>> {
   const checked = checkTeam(input);
   if (!checked.ok) return { ok: false, errors: checked.errors };
   const providers = await providerEntries(paseo);
@@ -435,10 +504,20 @@ export async function applyTeam({ team: input, ...target }: RpcInput<typeof team
   if (problems.length) return { ok: false, errors: problems.map((problem) => `${problem.target}: ${problem.message}`) };
 
   const project = await projectOf(paseo, target);
-  const { teams, names } = await projectTeams(project);
-  // Only share and unshare change the shared workspaces, so a draft without them (an AI edit drops the field) keeps the file's.
-  const previous = teamAtHome(teams, checked.team.orchestrator.workspace)?.team.orchestrator.sharedWorkspaces;
-  const team = checked.team.orchestrator.sharedWorkspaces === undefined && previous?.length ? { ...checked.team, orchestrator: { ...checked.team.orchestrator, sharedWorkspaces: previous } } : checked.team;
+  const [{ teams, names }, { entries }] = await Promise.all([projectTeams(project), paseo.workspaces.list()]);
+  const atHome = teamAtHome(teams, checked.team.orchestrator.workspace);
+  // A draft may only replace the team whose home it names when it is applied from that team's home or shared workspace
+  // (or restored from its file); a new team from the project or another workspace would overwrite it.
+  const from = "workspaceId" in target ? entries.find((workspace) => workspace.id === target.workspaceId) : undefined;
+  const fromTitle = from ? workspaceLabel(from) : null;
+  if (atHome && !restore && (fromTitle === null || !(isHome(atHome.team, fromTitle) || isSharedWith(atHome.team, fromTitle)))) {
+    return { ok: false, errors: [`orchestrator: workspace "${checked.team.orchestrator.workspace}" belongs to another team`] };
+  }
+  // Only share and unshare change the shared workspaces, so an existing team keeps the file's whatever the draft says
+  // (an AI edit drops the field, and a draft opened before a share or unshare has a stale list).
+  const { sharedWorkspaces: _draftShared, ...draftOrchestrator } = checked.team.orchestrator;
+  const previous = atHome?.team.orchestrator.sharedWorkspaces;
+  const team = !atHome ? checked.team : { ...checked.team, orchestrator: previous?.length ? { ...draftOrchestrator, sharedWorkspaces: previous } : draftOrchestrator };
   // Teams never share a workspace with another team, so one team's role sessions can't mix with another's.
   const clashes = workspaceClashes(team, workspacesOfOtherTeams(teams, team.orchestrator.workspace));
   if (clashes.length) return { ok: false, errors: clashes.map((problem) => `${problem.target}: ${problem.message}`) };
@@ -448,8 +527,9 @@ export async function applyTeam({ team: input, ...target }: RpcInput<typeof team
   const file = join(project.root, relative);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, serializeTeam(team), "utf8");
+  // Another file for the same home (an old `.agents/team.json`) gets the same team, as share and unshare do, so none goes stale.
+  for (const other of sameTeamFiles(teams, relative).filter((entry) => entry.file !== relative)) await writeFile(join(project.root, other.file), serializeTeam(team), "utf8");
 
-  const { entries } = await paseo.workspaces.list();
   const existing = entries.filter((workspace) => workspace.projectId === project.id && !workspace.archivingAt);
   // Applied from a shared workspace, the orchestrator to keep or start is that workspace's; the home is neither created nor started.
   const here = "workspaceId" in target ? existing.find((workspace) => workspace.id === target.workspaceId) : undefined;
@@ -461,9 +541,16 @@ export async function applyTeam({ team: input, ...target }: RpcInput<typeof team
   const lead = workspaces[0]!;
   // Applying again keeps the orchestrator already running on the same model and mode and tells it to re-read the team.
   const agents = (await paseo.agents.list()).entries.map((entry) => entry.agent);
-  const orchestratorAgentId = await runOrchestrator(paseo, agents, lead.id, lead.workspace, team, relative, providers, setup.features, setup.featureValues);
+  const orchestrator = await runOrchestrator(paseo, agents, lead.id, lead.workspace, team, relative, providers, setup.features, setup.featureValues);
   const notified = await notifyOrchestrators(paseo, agents, entries, project, team, lead.id, relative, providers, setup.features);
-  return { ok: true, file, workspaces, orchestratorAgentId, cleanup: [...(await archivePlanners(paseo, plannerCleanup(existing, agents, team))), ...notified], permission: setup.permission };
+  // Only planners working for this target or the team's workspaces; other workspaces' proposals and edits keep running. A restore has no planner of its own.
+  const scope = [...(restore ? [] : [proposalTarget(target)]), ...workspaces.map((workspace) => workspace.id), ...teamWorkspaces(team).map((title) => teamWorkspaceId(entries, project.id, title)).filter((id): id is string => id !== null)];
+  // A workspace any team uses, or the one the orchestrator was just started in, is never archived as an emptied Team planner.
+  const reserved = new Set([...teams.flatMap(teamFileWorkspaces), ...teamWorkspaces(team)].map((title) => title.trim().toLowerCase()));
+  const keep = new Set([lead.id, ...existing.filter((workspace) => reserved.has(workspaceLabel(workspace).trim().toLowerCase())).map((workspace) => workspace.id)]);
+  const cleanup = plannerCleanup(existing, agents, team, scope);
+  const planners = await archivePlanners(paseo, { agents: cleanup.agents, workspaces: cleanup.workspaces.filter((id) => !keep.has(id)) }, agents);
+  return { ok: true, file, workspaces, orchestratorAgentId: orchestrator.id, cleanup: [...orchestrator.failures, ...planners, ...notified.failures], notices: notified.notices, permission: setup.permission };
 }
 
 /** Shares the team with a workspace that has no team: adds it to the file's shared workspaces, starts the team's orchestrator there and tells the team's other orchestrators. */
@@ -475,9 +562,11 @@ export async function shareWorkspace({ projectId, file, workspaceId }: RpcInput<
   const workspace = entries.find((entry) => entry.id === workspaceId && entry.projectId === project.id && !entry.archivingAt);
   if (!workspace) return { ok: false, errors: [`Workspace ${workspaceId} was not found in ${project.name}.`] };
   const title = workspaceLabel(workspace);
-  if (isHome(own[0]!.team, title)) return { ok: false, errors: [`Workspace "${title}" is the team's home.`] };
+  // Of two files for the same home that diverged (an old `.agents/team.json`), the one asked for.
+  const requested = own.find((entry) => entry.file === file)!;
+  if (isHome(requested.team, title)) return { ok: false, errors: [`Workspace "${title}" is the team's home.`] };
   if (workspaceOwnerOf(teams, title)) return { ok: false, errors: [`Workspace "${title}" already has a team.`] };
-  const team = shareTeam(own[0]!.team, title);
+  const team = shareTeam(requested.team, title);
   const providers = await providerEntries(paseo);
   const problems = validateTeam(team, catalogFrom(providers));
   if (problems.length) return { ok: false, errors: problems.map((problem) => `${problem.target}: ${problem.message}`) };
@@ -485,10 +574,11 @@ export async function shareWorkspace({ projectId, file, workspaceId }: RpcInput<
   if (!setup.ok) return { ok: false, errors: setup.errors };
   for (const entry of own) await writeFile(join(project.root, entry.file), serializeTeam(shareTeam(entry.team, title)), "utf8");
   const agents = (await paseo.agents.list()).entries.map((entry) => entry.agent);
-  const relative = own[0]!.file;
-  const orchestratorAgentId = await runOrchestrator(paseo, agents, workspace.id, title, team, relative, providers, setup.features, setup.featureValues);
-  const cleanup = await notifyOrchestrators(paseo, agents, entries, project, team, workspace.id, relative, providers, setup.features);
-  return { ok: true, file: join(project.root, relative), workspaces: [{ target: "orchestrator", workspace: title, id: workspace.id, created: false }], orchestratorAgentId, cleanup, permission: setup.permission };
+  const relative = requested.file;
+  const orchestrator = await runOrchestrator(paseo, agents, workspace.id, title, team, relative, providers, setup.features, setup.featureValues);
+  // Sharing doesn't change the orchestrator's provider/model, so, as with unshare, only failures to notify are reported.
+  const notified = await notifyOrchestrators(paseo, agents, entries, project, team, workspace.id, relative, providers, setup.features, false);
+  return { ok: true, file: join(project.root, relative), workspaces: [{ target: "orchestrator", workspace: title, id: workspace.id, created: false }], orchestratorAgentId: orchestrator.id, cleanup: [...orchestrator.failures, ...notified.failures], notices: notified.notices, permission: setup.permission };
 }
 
 /** Stops sharing the team with a workspace: removes it from the file, archives that workspace's orchestrators only and tells the team's other orchestrators. */
@@ -508,9 +598,11 @@ export async function unshareWorkspace({ projectId, file, workspaceId }: RpcInpu
   for (const id of orchestratorsToArchive(agents, workspace.id)) {
     await paseo.agents.ref(id).archive().then(() => archived.push(id), (error: unknown) => failures.push(`orchestrator ${id}: ${String(error)}`));
   }
-  const team = unshareTeam(own[0]!.team, title);
+  const requested = own.find((entry) => entry.file === file)!;
+  const team = unshareTeam(requested.team, title);
   const providers = await providerEntries(paseo);
   const features = await roleFeaturesFor(paseo, providers, team, project.root);
-  failures.push(...(await notifyOrchestrators(paseo, agents, entries, project, team, workspace.id, own[0]!.file, providers, features)));
+  // Unsharing doesn't change the orchestrator's provider/model, so only failures to notify are reported here.
+  failures.push(...(await notifyOrchestrators(paseo, agents, entries, project, team, workspace.id, requested.file, providers, features, false)).failures);
   return { ok: true, files: own.map((entry) => entry.file), archived, failures };
 }

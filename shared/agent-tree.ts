@@ -69,10 +69,14 @@ export function isHidden(agent: DashboardAgent): boolean {
   return agent.status === "closed" || (!agent.subagent && !!agent.archivedAt);
 }
 
-/** Only finished, inactive sessions that need nothing from the user can be dismissed from this dashboard tab. */
+/**
+ * Only finished, inactive sessions that need nothing from the user can be dismissed from this dashboard tab, and only
+ * when every agent below them can be too (hiding a session hides its descendants). Waiting roles are not agents.
+ */
 export function canDismiss(node: AgentNode): boolean {
   return !node.waiting && !node.live && !node.delegating && node.badge !== "attention" && node.badge !== "question" &&
-    (isHidden(node.agent) || (node.agent.subagent === true && node.agent.status !== "running"));
+    (isHidden(node.agent) || (node.agent.subagent === true && node.agent.status !== "running")) &&
+    node.children.every((child) => child.waiting || canDismiss(child));
 }
 
 /** A Paseo agent that stopped on an error and is not archived yet can be archived; permission prompts and provider sub-agents cannot. */
@@ -85,6 +89,12 @@ export function canArchive(node: AgentNode): boolean {
 /** Waiting on the user's answer: a pending permission request (a running agent asking a question has one) or a permission attention flag. */
 function awaitsAnswer(agent: DashboardAgent): boolean {
   return (agent.pendingPermissions?.length ?? 0) > 0 || (agent.requiresAttention === true && agent.attentionReason === "permission");
+}
+
+/** Shows the question (waiting on an answer) or attention (stopped on an error) badge. */
+function needsUser(agent: DashboardAgent): boolean {
+  const badge = badgeOf(agent);
+  return badge === "question" || badge === "attention";
 }
 
 /** Like the card badge, agents waiting on the user's answer or stopped on an error await the user even while running; other running agents are working. */
@@ -232,7 +242,9 @@ const newestFirst = (a: AgentNode, b: AgentNode) => b.agent.createdAt.localeComp
  * Role adoption happens before filtering. Without showClosed, unclosed/unarchived roots with no parent are shown;
  * children keep active branches and the newest idle session per sibling type. Promoted orphans compete by original parent.
  * Branches dropped by this filtering never become roots.
- * Dismissed sessions and their descendants are excluded first in both modes; waiting nodes are unaffected.
+ * Dismissed sessions and their descendants are excluded first in both modes; waiting nodes are unaffected. An agent
+ * that needs the user (the question or attention badge) is never excluded this way: it is placed as if its hidden
+ * parent were not shown (adopted by its team's orchestrator, else a root).
  * With showClosed, all remaining sessions are shown, promoting missing parents and parent cycles to roots as before.
  */
 export function buildAgentForest(agents: readonly DashboardAgent[], workspaceIds: readonly string[], options: { showClosed: boolean; defaultEfforts?: Record<string, string>; roster?: readonly RosterTeam[]; dismissed?: readonly string[] }): AgentForest {
@@ -251,6 +263,10 @@ export function buildAgentForest(agents: readonly DashboardAgent[], workspaceIds
         dismissed.add(id);
         pending.push(id);
       }
+    }
+    // A dismissal is stored by id, so an agent hidden while finished could later need the user; it is shown again then.
+    for (const agent of agents) {
+      if (dismissed.has(agent.id) && needsUser(agent)) dismissed.delete(agent.id);
     }
   }
   const scope = agents.filter((agent) => !dismissed.has(agent.id) && workspaces.has(agent.workspaceId ?? "") && (options.showClosed || !isHidden(agent)));

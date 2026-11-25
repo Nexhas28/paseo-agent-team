@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { applyTeam, cancelProposal, deleteTeam, improveInstructions, instructionsProposal, pendingProposal, projectTeamsList, proposeTeamEdit, proposeTeam, readTeam, reconnectTeam, restartOrchestrator, restoreTeam, shareWorkspace, teamEditProposal, teamProposal, teamRoster, unshareWorkspace } from "./server/team";
-import { teamApplyRpc, teamDeleteRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamProjectsRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamReconnectRpc, teamRestartOrchestratorRpc, teamRestoreRpc, teamEditProposalRpc, teamEditProposeRpc, teamRosterRpc, teamShareRpc, teamUnshareRpc } from "./shared/rpc";
+import { applyTeam, cancelPlanner, cancelProposal, deleteTeam, improveInstructions, instructionsProposal, pendingProposal, projectTeamsList, proposeTeamEdit, proposeTeam, readTeam, reconnectTeam, restartOrchestrator, restoreTeam, shareWorkspace, teamEditProposal, teamProposal, teamRoster, unshareWorkspace } from "./server/team";
+import { teamApplyRpc, teamDeleteRpc, teamInstructionsImproveRpc, teamInstructionsProposalRpc, teamPendingProposalRpc, teamPlannerCancelRpc, teamProjectsRpc, teamProposalCancelRpc, teamProposalRpc, teamProposeRpc, teamReadRpc, teamReconnectRpc, teamRestartOrchestratorRpc, teamRestoreRpc, teamEditProposalRpc, teamEditProposeRpc, teamRosterRpc, teamShareRpc, teamUnshareRpc } from "./shared/rpc";
 
 export default function contribute(server: PluginServerContext) {
   server.handle(teamProjectsRpc, projectTeamsList);
@@ -11,6 +11,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(teamProposalRpc, teamProposal);
   server.handle(teamPendingProposalRpc, pendingProposal);
   server.handle(teamProposalCancelRpc, cancelProposal);
+  server.handle(teamPlannerCancelRpc, cancelPlanner);
   server.handle(teamEditProposeRpc, proposeTeamEdit);
   server.handle(teamEditProposalRpc, teamEditProposal);
   server.handle(teamInstructionsImproveRpc, improveInstructions);

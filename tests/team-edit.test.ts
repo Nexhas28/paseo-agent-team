@@ -207,7 +207,7 @@ describe("team restore RPC contract", () => {
 
   it("accepts ok:false with errors and an ok:true apply result", () => {
     expect(teamRestoreRpc.output.safeParse({ ok: false, errors: ["x"] }).success).toBe(true);
-    const applied = { ok: true, file: "/p/.agents/teams/lead.json", workspaces: [{ target: "lead", workspace: "lead", id: "wks_1", created: false }], orchestratorAgentId: "agt_1", cleanup: [], permission: null };
+    const applied = { ok: true, file: "/p/.agents/teams/lead.json", workspaces: [{ target: "lead", workspace: "lead", id: "wks_1", created: false }], orchestratorAgentId: "agt_1", cleanup: [], notices: [], permission: null };
     expect(teamRestoreRpc.output.safeParse(applied).success).toBe(true);
     expect(teamRestoreRpc.output.safeParse({ ...applied, permission: ".claude/settings.local.json" }).success).toBe(true);
   });

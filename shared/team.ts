@@ -42,7 +42,14 @@ export const TeamSchema = z
       if (roleNames.has(key)) ctx.addIssue({ code: "custom", path: ["roles", index, "name"], message: `duplicate role name "${role.name}"` });
       roleNames.add(key);
     });
-
+    // Each shared workspace runs its own orchestrator, so one listed twice, or the home listed again, would get two.
+    const workspaces = new Set([team.orchestrator.workspace.toLowerCase()]);
+    team.orchestrator.sharedWorkspaces?.forEach((title, index) => {
+      const key = title.toLowerCase();
+      if (key === team.orchestrator.workspace.toLowerCase()) ctx.addIssue({ code: "custom", path: ["orchestrator", "sharedWorkspaces", index], message: `shared workspace "${title}" is the team's home` });
+      else if (workspaces.has(key)) ctx.addIssue({ code: "custom", path: ["orchestrator", "sharedWorkspaces", index], message: `duplicate shared workspace "${title}"` });
+      workspaces.add(key);
+    });
   });
 
 export type Team = z.output<typeof TeamSchema>;

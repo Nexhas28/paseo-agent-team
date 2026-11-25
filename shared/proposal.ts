@@ -54,17 +54,50 @@ function modelLines(catalog: readonly ProviderInfo[]): string[] {
 const EFFORT_GUIDE =
   '- Set each role\'s and the orchestrator\'s effort by the nature of its work, using only an effort id listed for its model above, or "" for the model default: "low" for routine verification, running tests, QA, docs or release work; "" or "medium" for ordinary implementation; "high" for architecture, core design or hard debugging. Use "" when the model lists no effort ids.';
 
-/** The JSON object in a planner's final message, tolerating a code fence or text around it. */
+/** Each balanced `{ ... }` in the text, outermost first, skipping braces inside JSON strings. */
+function balancedObjects(text: string): string[] {
+  const objects: string[] = [];
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    for (let index = start; index < text.length; index++) {
+      const char = text[index];
+      if (inString) {
+        if (char === "\\") index++;
+        else if (char === '"') inString = false;
+      } else if (char === '"') inString = true;
+      else if (char === "{") depth++;
+      else if (char === "}" && --depth === 0) {
+        objects.push(text.slice(start, index + 1));
+        break;
+      }
+    }
+  }
+  return objects;
+}
+
+/**
+ * The JSON object in a planner's final message, tolerating a code fence or text around it. Fenced blocks are tried
+ * first, then everything from the first `{` to the last `}`, then each balanced object, so braces in the prose
+ * (`{role}`, `${var}`) don't hide a valid answer.
+ */
 function jsonIn(message: string | null, what: string): { ok: true; value: unknown } | { ok: false; errors: string[] } {
   if (!message?.trim()) return { ok: false, errors: ["the planner finished without an answer"] };
   const start = message.indexOf("{");
   const end = message.lastIndexOf("}");
   if (start < 0 || end <= start) return { ok: false, errors: [`the planner's answer has no JSON ${what}`] };
-  try {
-    return { ok: true, value: JSON.parse(message.slice(start, end + 1)) };
-  } catch (error) {
-    return { ok: false, errors: [`the planner's answer is not valid JSON: ${(error as Error).message}`] };
+  const whole = message.slice(start, end + 1);
+  const fenced = [...message.matchAll(/```[a-zA-Z]*[ \t]*\r?\n([\s\S]*?)```/g)].map((match) => match[1]!.trim());
+  let firstError: Error | undefined;
+  for (const candidate of [...fenced, whole, ...balancedObjects(message)]) {
+    try {
+      const value: unknown = JSON.parse(candidate);
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) return { ok: true, value };
+    } catch (error) {
+      if (candidate === whole) firstError = error as Error;
+    }
   }
+  return { ok: false, errors: [`the planner's answer is not valid JSON: ${firstError?.message ?? "no JSON object found"}`] };
 }
 
 /** Asks a planner agent to propose a team for the goal, using only models this host can run. */

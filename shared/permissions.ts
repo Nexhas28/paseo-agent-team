@@ -26,7 +26,16 @@ export function needsRunPermission(team: Team, entries: readonly ProviderEntry[]
   });
 }
 
-/** The settings with the rule added to `permissions.allow`, or null when it is already there. */
+/** Why the settings' `permissions` can't take an allow rule without losing what is there (not an object, or `allow` not a list), or null when it can. */
+export function permissionsProblem(settings: Record<string, unknown>): string | null {
+  const { permissions } = settings;
+  if (permissions === undefined) return null;
+  if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions)) return '"permissions" is not a JSON object';
+  const { allow } = permissions as Record<string, unknown>;
+  return allow === undefined || Array.isArray(allow) ? null : '"permissions.allow" is not a list';
+}
+
+/** The settings with the rule added to `permissions.allow`, or null when it is already there. Check `permissionsProblem` first. */
 export function withAllowRule(settings: Record<string, unknown>, rule: string): Record<string, unknown> | null {
   const permissions = (settings.permissions ?? {}) as Record<string, unknown>;
   const allow = Array.isArray(permissions.allow) ? (permissions.allow as unknown[]) : [];

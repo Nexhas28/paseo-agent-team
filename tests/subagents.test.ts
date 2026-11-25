@@ -54,10 +54,11 @@ describe("applySubagentUpdate", () => {
     expect(Object.keys(next)).toEqual(["a1:s1", "a2:s1"]);
   });
 
-  it("removes a sub-agent, and returns the same object when the key is missing", () => {
-    const current = keyed(sub());
-    expect(applySubagentUpdate(current, { kind: "remove", parentAgentId: "a1", subagentId: "s1" })).toEqual({});
-    expect(applySubagentUpdate(current, { kind: "remove", parentAgentId: "a1", subagentId: "nope" })).toBe(current);
+  it("removes a sub-agent with a tombstone, so the timeline fallback doesn't bring it back, and keeps the others", () => {
+    const current = keyed(sub(), sub({ id: "s2" }));
+    const removed = applySubagentUpdate(current, { kind: "remove", parentAgentId: "a1", subagentId: "s1" });
+    expect(mergeSubagents([sub({ status: "completed" })], removed).map((agent) => agent.id)).toEqual(["s2"]);
+    expect(applySubagentUpdate(removed, { kind: "remove", parentAgentId: "a1", subagentId: "s1" })).toBe(removed);
   });
 
   it("sets a known sub-agent to running on a timeline event and bumps updatedAt", () => {

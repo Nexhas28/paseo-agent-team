@@ -133,6 +133,16 @@ export const teamProposalCancelRpc = defineRpc({
   output: z.object({}),
 });
 
+/**
+ * Archives one planner (team planner, team editor or instructions planner) by id, so a cancelled AI edit or a closed
+ * instructions dialog stops spending tokens. An agent that is gone or already archived is ignored; one that isn't a planner is refused.
+ */
+export const teamPlannerCancelRpc = defineRpc({
+  name: "team.planner.cancel",
+  input: z.object({ agentId: z.string() }),
+  output: z.object({}),
+});
+
 const TeamOutlineSchema = z.object({
   orchestratorWorkspace: z.string(),
   roles: z.array(z.object({ name: z.string(), folders: z.array(z.string()) })),
@@ -199,8 +209,10 @@ export const teamApplyRpc = defineRpc({
       file: z.string(),
       workspaces: z.array(AppliedWorkspaceSchema),
       orchestratorAgentId: z.string(),
-      /** Planners, planner workspaces or other workspaces' orchestrators that could not be archived or notified; the team itself was applied. */
+      /** Planners, planner workspaces or orchestrators that could not be archived or notified; the team itself was applied. */
       cleanup: z.array(z.string()),
+      /** Advice that is not a failure, such as an orchestrator in another of the team's workspaces still on the old provider/model (use Reset session there). */
+      notices: z.array(z.string()),
       /** The Claude settings file the orchestrator's `paseo run` allow rule was added to, or null when none was added. */
       permission: z.string().nullable(),
     }),
@@ -224,7 +236,7 @@ export const teamRestartOrchestratorRpc = defineRpc({
   ]),
 });
 
-/** Adds the workspace to the team's shared workspaces, writes the file, starts the team's orchestrator there and notifies the other orchestrators (failures in cleanup). */
+/** Adds the workspace to the team's shared workspaces, writes the file, starts the team's orchestrator there and notifies the other orchestrators (failures in cleanup, advice in notices). */
 export const teamShareRpc = defineRpc({
   name: "team.share",
   input: z.object({ projectId: z.string(), file: z.string(), workspaceId: z.string() }),

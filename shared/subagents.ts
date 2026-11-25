@@ -9,6 +9,8 @@ export type ProviderSubagent = {
   status: "running" | "completed" | "failed" | "canceled";
   createdAt: string;
   updatedAt: string;
+  /** Set on the live entry of a sub-agent Paseo removed, so the timeline fallback doesn't bring it back. */
+  removed?: true;
 };
 
 const record = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -40,22 +42,24 @@ export function applySubagentUpdate(current: Record<string, ProviderSubagent>, p
   if (typeof value?.parentAgentId !== "string" || typeof value.subagentId !== "string") return current;
   const key = `${value.parentAgentId}:${value.subagentId}`;
   if (value.kind === "remove") {
-    if (!Object.hasOwn(current, key)) return current;
-    const next = { ...current };
-    delete next[key];
-    return next;
+    // A tombstone rather than a deletion: the tool-call history still lists the sub-agent.
+    if (current[key]?.removed) return current;
+    const previous = current[key] ?? { id: value.subagentId, parentAgentId: value.parentAgentId, parentSubagentId: null, title: null, description: null, status: "completed" as const, createdAt: "", updatedAt: "" };
+    // Not "running", so callers that look for live sub-agents (animations) don't count it.
+    return { ...current, [key]: { ...previous, status: "completed", removed: true } };
   }
   if (value.kind === "timeline" && typeof value.timestamp === "string") {
-    const previous = current[key];
-    const agent: ProviderSubagent = previous ?? { id: value.subagentId, parentAgentId: value.parentAgentId, parentSubagentId: null, title: null, description: null, status: "running", createdAt: value.timestamp, updatedAt: value.timestamp };
-    return { ...current, [key]: { ...agent, status: "running", updatedAt: value.timestamp } };
+    // Tool-call activity never brings a removed sub-agent back; only an upsert from Paseo does.
+    if (current[key]?.removed) return current;
+    const previous = current[key] ?? { id: value.subagentId, parentAgentId: value.parentAgentId, parentSubagentId: null, title: null, description: null, status: "running" as const, createdAt: value.timestamp, updatedAt: value.timestamp };
+    return { ...current, [key]: { ...previous, status: "running", updatedAt: value.timestamp } };
   }
   return current;
 }
 
-/** Live status takes precedence over the tool-call fallback. */
+/** Live status takes precedence over the tool-call fallback; a sub-agent Paseo removed is left out. */
 export function mergeSubagents(bootstrap: ProviderSubagent[], live: Record<string, ProviderSubagent>): ProviderSubagent[] {
-  return Object.values({ ...Object.fromEntries(bootstrap.map((agent) => [keyOf(agent), agent])), ...live });
+  return Object.values({ ...Object.fromEntries(bootstrap.map((agent) => [keyOf(agent), agent])), ...live }).filter((agent) => !agent.removed);
 }
 
 /** Adapts provider sessions to dashboard children of their Paseo agent. */
